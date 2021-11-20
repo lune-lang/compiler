@@ -1,5 +1,7 @@
 module Syntax.Common
-  ( Name
+  ( Line
+  , Column
+  , Name
   , Label
   , ModName
   , Identifier(..)
@@ -7,6 +9,9 @@ module Syntax.Common
   , Role(..)
   , opChars
   ) where
+
+type Line = Int
+type Column = Int
 
 type Name = String
 type Label = String

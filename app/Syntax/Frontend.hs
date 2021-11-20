@@ -14,7 +14,7 @@ import qualified Control.Lens as Lens
 
 import Syntax.Common
 
-data Expr
+data SimpleExpr
   = Int Int
   | Float Double
   | Char Char
@@ -27,13 +27,17 @@ data Expr
   | Lambda [Name] Expr
   | Call Expr Expr
 
-data Type
+type Expr = (SimpleExpr, Line, Column)
+
+data SimpleType
   = TCon Identifier
   | TOperator Name Type Type
   | TLabel Label
   | TRecord Type
   | TVariant Type
   | TCall Type Type
+
+type Type = (SimpleType, Line, Column)
 
 data Scheme = Forall [Name] Type
 
