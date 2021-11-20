@@ -1,6 +1,8 @@
 module Syntax.Frontend
-  ( Expr(..)
-  , Type(..)
+  ( SimpleExpr(..)
+  , Expr
+  , SimpleType(..)
+  , Type
   , Scheme(..)
   , Wrapper(..)
   , LocalDef(..)
