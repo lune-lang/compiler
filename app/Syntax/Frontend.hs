@@ -29,7 +29,7 @@ data SimpleExpr
   | Lambda [Name] Expr
   | Call Expr Expr
 
-type Expr = (SimpleExpr, Line, Column)
+type Expr = Located SimpleExpr
 
 data SimpleType
   = TCon Identifier
@@ -39,7 +39,7 @@ data SimpleType
   | TVariant Type
   | TCall Type Type
 
-type Type = (SimpleType, Line, Column)
+type Type = Located SimpleType
 
 data Scheme = Forall [Name] Type
 

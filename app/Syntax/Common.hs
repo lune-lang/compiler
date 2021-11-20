@@ -1,6 +1,7 @@
 module Syntax.Common
   ( Line
   , Column
+  , Located
   , Name
   , Label
   , ModName
@@ -12,6 +13,7 @@ module Syntax.Common
 
 type Line = Int
 type Column = Int
+type Located a = (a, Line, Column)
 
 type Name = String
 type Label = String

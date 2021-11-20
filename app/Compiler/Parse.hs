@@ -1,5 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE TupleSections #-}
 
 module Compiler.Parse (parseFiles) where
 
@@ -82,6 +84,11 @@ Token.TokenParser
   , Token.whiteSpace
   } = lexer
 
+getPosition :: Parser (Line, Column)
+getPosition = do
+  position <- Parsec.getPosition
+  return (Parsec.sourceLine position, Parsec.sourceColumn position)
+
 identifierLower :: Parser String
 identifierLower = do
   name <- identifier
@@ -99,44 +106,62 @@ identifierUpper = do
 nameOrOperator :: Parser String
 nameOrOperator = parens operator <|> identifierLower
 
-parseIdentifier :: (Name -> a) -> (Identifier -> a) -> Parser a
+parseIdentifier :: (Name -> a) -> (Identifier -> a) -> Parser (Located a)
 parseIdentifier f g = do
+  (line, column) <- getPosition
   name <- identifier
   if Char.isUpper (head name)
-    then parseQualified name <|> return (f name)
-    else return $ g (Unqualified name)
+    then parseQualified line column name <|> return (f name, line, column)
+    else return (g $ Unqualified name, line, column)
   where
-    parseQualified modName = do
+    parseQualified line column modName = do
       reservedOp "."
       name <- nameOrOperator
-      return $ g (Qualified modName name)
+      return (g $ Qualified modName name, line, column)
 
 parseNumber :: Parser Expr
-parseNumber =
+parseNumber = do
+  (line, column) <- getPosition
   naturalOrFloat >>= \case
-    Left x -> return $ Int (fromInteger x)
-    Right x -> return (Float x)
+    Left x -> return (Int $ fromInteger x, line, column)
+    Right x -> return (Float x, line, column)
+
+parseChar :: Parser Expr
+parseChar = do
+  (line, column) <- getPosition
+  x <- charLiteral
+  return (Char x, line, column)
+
+parseString :: Parser Expr
+parseString = do
+  (line, column) <- getPosition
+  x <- stringLiteral
+  return (String x, line, column)
 
 parseNegate :: Parser Expr
 parseNegate = do
+  (line, column) <- getPosition
   reservedOp "-"
-  fmap Negate parseFactor
+  x <- parseFactor
+  return (Negate x, line, column)
 
 parseDefIn :: Parser Expr
 parseDefIn = do
+  (line, column) <- getPosition
   reserved "def"
   defs <- Parsec.many1 parseLocalDef
   reserved "in"
   body <- parseExpr
-  return (DefIn defs body)
+  return (DefIn defs body, line, column)
 
 parseLambda :: Parser Expr
 parseLambda = do
+  (line, column) <- getPosition
   reserved "do"
   args <- Parsec.many identifierLower
   reservedOp "."
   body <- parseExpr
-  return (Lambda args body)
+  return (Lambda args body, line, column)
 
 parseParensExpr :: Parser Expr
 parseParensExpr = parens $
@@ -145,24 +170,27 @@ parseParensExpr = parens $
   parseLeftSection
   where
     parseOperator = do
+      (line, column) <- getPosition
       name <- operator
       parseRightSection name <|>
-        return (Operator name Nothing Nothing)
+        return (Operator name Nothing Nothing, line, column)
 
     parseRightSection name = do
+      (line, column) <- getPosition
       x <- parseCallFactor
-      return $ Operator name Nothing (Just x)
+      return (Operator name Nothing (Just x), line, column)
 
     parseLeftSection = do
+      (line, column) <- getPosition
       x <- parseCallFactor
       name <- operator
-      return $ Operator name (Just x) Nothing
+      return (Operator name (Just x) Nothing, line, column)
 
 parseFactor :: Parser Expr
 parseFactor =
   parseNumber <|>
-  fmap Char charLiteral <|>
-  fmap String stringLiteral <|>
+  parseChar <|>
+  parseString <|>
   parseIdentifier Label Identifier <|>
   parseNegate <|>
   parseDefIn <|>
@@ -175,20 +203,35 @@ parseCallFactor = do
   parseCall x <|> return x
   where
     parseCall f = do
+      (line, column) <- getPosition
       x <- parseFactor
-      parseCall (Call f x) <|> return (Call f x)
+      let call = (Call f x, line, column)
+      parseCall call <|> return call
 
 parseExpr :: Parser Expr
 parseExpr = do
+  (line, column) <- getPosition
   ops <- operatorParsers
-    (\n x y -> Operator n (Just x) (Just y))
+    \n x y -> (Operator n (Just x) (Just y), line, column)
   Ex.buildExpressionParser ops parseCallFactor
+
+parseTRecord :: Parser Type
+parseTRecord = do
+  (line, column) <- getPosition
+  row <- braces parseType
+  return (TRecord row, line, column)
+
+parseTVariant :: Parser Type
+parseTVariant = do
+  (line, column) <- getPosition
+  row <- brackets parseType
+  return (TVariant row, line, column)
 
 parseTFactor :: Parser Type
 parseTFactor =
   parseIdentifier TLabel TCon <|>
-  fmap TRecord (braces parseType) <|>
-  fmap TVariant (brackets parseType) <|>
+  parseTRecord <|>
+  parseTVariant <|>
   parens parseType
 
 parseTCallFactor :: Parser Type
@@ -197,12 +240,15 @@ parseTCallFactor = do
   parseCall t <|> return t
   where
     parseCall f = do
+      (line, column) <- getPosition
       t <- parseTFactor
-      parseCall (TCall f t) <|> return (TCall f t)
+      let call = (TCall f t, line, column)
+      parseCall call <|> return call
 
 parseType :: Parser Type
 parseType = do
-  ops <- operatorParsers TOperator
+  (line, column) <- getPosition
+  ops <- operatorParsers \n x y -> (TOperator n x y, line, column)
   Ex.buildExpressionParser ops parseTCallFactor
 
 parseAny :: Parser Scheme
@@ -415,7 +461,7 @@ data CommentState
   | BlockComment Int
 
 removeComments :: CommentState -> String -> String
-removeComments = curry $ \case
+removeComments = curry \case
   (_, []) -> []
 
   (Code, '-':'-':str) -> removeComments LineComment str
