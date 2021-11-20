@@ -244,7 +244,8 @@ desugarDefs modName defs = do
 
       F.Syntax name role -> do
         vars <- Reader.asks snd
-        let available = if role == NegateFunction then fst vars else snd vars
+        let functionRoles = [ NegateFunction, DelayFunction ]
+        let available = if role `elem` functionRoles then fst vars else snd vars
         Error.moduleContext modName
           if Qualified modName name `notElem` available
             then Error.notDefined name
