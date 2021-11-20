@@ -86,7 +86,7 @@ instance Substitutable a => Substitutable (Map k a) where
   apply s = fmap (apply s)
   freeVars = foldMap freeVars
 
-type Constraint = (Bool, Type, Type)
+type Constraint = (Type, Type)
 
 data Stream a = Cons a (Stream a)
 
@@ -152,10 +152,7 @@ generalise t = do
   return $ Forall (Set.toList vs) t
 
 unify :: Type -> Type -> Infer e ()
-unify t1 t2 = State.modify $ Lens.over constraints ((True, t1, t2) :)
-
-annotate :: Type -> Type -> Infer e ()
-annotate t1 t2 = State.modify $ Lens.over constraints ((False, t1, t2) :)
+unify t1 t2 = State.modify $ Lens.over constraints ((t1, t2) :)
 
 freshVar :: Origin -> Infer e Type
 freshVar origin = do
@@ -183,7 +180,7 @@ inferType = \case
     t <- extendEnv (Unqualified n) (Forall [] var) (inferType x1)
     unify t var
     anno' <- mapM (unaliasScheme >=> instantiate Annotated) anno
-    mapM_ (annotate t) anno'
+    mapM_ (unify t) anno'
     s <- solve
     equivalent anno' $ fmap (apply s) anno'
     Reader.local (Lens.over typeEnv $ apply s) do
@@ -241,9 +238,9 @@ bind n t
 solver :: Subst -> [Constraint] -> Infer String Subst
 solver s = \case
   [] -> return s
-  (bi, t1, t2) : cs -> do
+  (t1, t2) : cs -> do
     cons <- rowCons
-    s1 <- unifies bi cons t1 t2
+    s1 <- unifies cons t1 t2
     let sub = Bf.bimap (apply s1) (apply s1)
     solver (compose s1 s) (map sub cs)
 
@@ -300,7 +297,7 @@ checkFuncs = \case
       t <- extendEnv n (Forall [] var) (inferType x)
       unify t var
       anno' <- mapM (unaliasScheme >=> instantiate Annotated) anno
-      mapM_ (annotate t) anno'
+      mapM_ (unify t) anno'
       s <- solve
       equivalent anno' $ fmap (apply s) anno'
       return (s, t)
