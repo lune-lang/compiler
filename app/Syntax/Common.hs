@@ -33,6 +33,8 @@ data Role
   | CharType
   | StringType
   | LabelType
+  | LazyType
+  | DelayFunction
   | CurlyBrackets
   | SquareBrackets
   | RowConstructor
