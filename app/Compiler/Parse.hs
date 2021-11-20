@@ -320,6 +320,8 @@ parseSyntax = do
       when "char-type" CharType <|>
       when "string-type" StringType <|>
       when "label-type" LabelType <|>
+      when "lazy-type" LazyType <|>
+      when "delay-function" DelayFunction <|>
       when "curly-brackets" CurlyBrackets <|>
       when "square-brackets" SquareBrackets <|>
       when "row-constructor" RowConstructor
