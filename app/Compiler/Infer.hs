@@ -202,8 +202,8 @@ inferType = \case
     functionType t2 var >>= unify t1
     return var
 
-unifies :: Bool -> Maybe Identifier -> Type -> Type -> Infer String Subst
-unifies bi cons = curry \case
+unifies :: Maybe Identifier -> Type -> Type -> Infer String Subst
+unifies cons = curry \case
   (t1, t2) | t1 == t2 -> return nullSubst
 
   (TVar (n, _), t) -> bind n t
@@ -212,13 +212,13 @@ unifies bi cons = curry \case
 
   (TCall3 (TCon n) l v1 r1, t2) | Just cons' <- cons, n == cons' -> do
       (v2, r2) <- rowGet cons' l t2
-      s1 <- unifies bi cons v1 v2
-      s2 <- unifies bi cons (apply s1 r1) (apply s1 r2)
+      s1 <- unifies cons v1 v2
+      s2 <- unifies cons (apply s1 r1) (apply s1 r2)
       return (compose s2 s1)
 
   (TCall t1 t2, TCall t3 t4) -> do
-    s1 <- unifies bi cons t1 t3
-    s2 <- unifies bi cons (apply s1 t2) (apply s1 t4)
+    s1 <- unifies cons t1 t3
+    s2 <- unifies cons (apply s1 t2) (apply s1 t4)
     return (compose s2 s1)
 
   (t1, t2) -> Error.unification t1 t2
