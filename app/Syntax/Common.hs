@@ -13,7 +13,9 @@ module Syntax.Common
 
 type Line = Int
 type Column = Int
-type Location = (FilePath, Line, Column, Int)
+data Location
+  = Real FilePath Line Column Int
+  | Fake FilePath Int
 
 type Name = String
 type Label = String
