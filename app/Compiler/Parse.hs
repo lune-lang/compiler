@@ -93,7 +93,7 @@ getLocation = do
   let column = Parsec.sourceColumn position
   state <- Parsec.getState
   Parsec.modifyState $ Bf.second (+1)
-  return $ Real file line column (snd state)
+  return (file, snd state, Real line column)
 
 identifierLower :: Parser String
 identifierLower = do
