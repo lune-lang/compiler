@@ -1,7 +1,8 @@
 module Syntax.Common
   ( Line
   , Column
-  , Location(..)
+  , Position(..)
+  , Location
   , Name
   , Label
   , ModName
@@ -13,10 +14,13 @@ module Syntax.Common
 
 type Line = Int
 type Column = Int
-data Location
-  = Real FilePath Line Column Int
-  | Fake FilePath Int
+
+data Position
+  = Fake
+  | Real Line Column
   deriving (Eq)
+
+type Location = (FilePath, Int, Position)
 
 type Name = String
 type Label = String
