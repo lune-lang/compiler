@@ -1,7 +1,7 @@
 module Syntax.Common
   ( Line
   , Column
-  , Location
+  , Location(..)
   , Name
   , Label
   , ModName
