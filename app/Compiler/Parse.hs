@@ -26,9 +26,10 @@ import Syntax.Common
 import Syntax.Frontend
 
 type OpTable = Map Name (Ex.Assoc, Int)
-type Parser a = Parsec String OpTable a
+type ParseState = (OpTable, Int)
+type Parser a = Parsec String ParseState a
 
-lexerStyle :: Token.LanguageDef OpTable
+lexerStyle :: Token.LanguageDef ParseState
 lexerStyle = Token.LanguageDef
   { Token.commentStart = "[-"
   , Token.commentEnd = "-]"
@@ -65,7 +66,7 @@ lexerStyle = Token.LanguageDef
   , Token.caseSensitive = True
   }
 
-lexer :: Token.TokenParser OpTable
+lexer :: Token.TokenParser ParseState
 lexer = Token.makeTokenParser lexerStyle
 
 Token.TokenParser
@@ -84,10 +85,15 @@ Token.TokenParser
   , Token.whiteSpace
   } = lexer
 
-getPosition :: Parser (Line, Column)
-getPosition = do
+getLocation :: Parser Location
+getLocation = do
   position <- Parsec.getPosition
-  return (Parsec.sourceLine position, Parsec.sourceColumn position)
+  let file = Parsec.sourceName position
+  let line = Parsec.sourceLine position
+  let column = Parsec.sourceColumn position
+  state <- Parsec.getState
+  Parsec.modifyState $ Bf.second (+1)
+  return (file, line, column, snd state)
 
 identifierLower :: Parser String
 identifierLower = do
@@ -106,62 +112,62 @@ identifierUpper = do
 nameOrOperator :: Parser String
 nameOrOperator = parens operator <|> identifierLower
 
-parseIdentifier :: (Name -> a) -> (Identifier -> a) -> Parser (Located a)
+parseIdentifier :: (Name -> a) -> (Identifier -> a) -> Parser (a, Location)
 parseIdentifier f g = do
-  (line, column) <- getPosition
+  loc <- getLocation
   name <- identifier
   if Char.isUpper (head name)
-    then parseQualified line column name <|> return (f name, line, column)
-    else return (g $ Unqualified name, line, column)
+    then parseQualified loc name <|> return (f name, loc)
+    else return (g $ Unqualified name, loc)
   where
-    parseQualified line column modName = do
+    parseQualified loc modName = do
       reservedOp "."
       name <- nameOrOperator
-      return (g $ Qualified modName name, line, column)
+      return (g $ Qualified modName name, loc)
 
 parseNumber :: Parser Expr
 parseNumber = do
-  (line, column) <- getPosition
+  loc <- getLocation
   naturalOrFloat >>= \case
-    Left x -> return (Int $ fromInteger x, line, column)
-    Right x -> return (Float x, line, column)
+    Left x -> return (Int $ fromInteger x, loc)
+    Right x -> return (Float x, loc)
 
 parseChar :: Parser Expr
 parseChar = do
-  (line, column) <- getPosition
+  loc <- getLocation
   x <- charLiteral
-  return (Char x, line, column)
+  return (Char x, loc)
 
 parseString :: Parser Expr
 parseString = do
-  (line, column) <- getPosition
+  loc <- getLocation
   x <- stringLiteral
-  return (String x, line, column)
+  return (String x, loc)
 
 parseNegate :: Parser Expr
 parseNegate = do
-  (line, column) <- getPosition
+  loc <- getLocation
   reservedOp "-"
   x <- parseFactor
-  return (Negate x, line, column)
+  return (Negate x, loc)
 
 parseDefIn :: Parser Expr
 parseDefIn = do
-  (line, column) <- getPosition
+  loc <- getLocation
   reserved "def"
   defs <- Parsec.many1 parseLocalDef
   reserved "in"
   body <- parseExpr
-  return (DefIn defs body, line, column)
+  return (DefIn defs body, loc)
 
 parseLambda :: Parser Expr
 parseLambda = do
-  (line, column) <- getPosition
+  loc <- getLocation
   reserved "do"
   args <- Parsec.many identifierLower
   reservedOp "."
   body <- parseExpr
-  return (Lambda args body, line, column)
+  return (Lambda args body, loc)
 
 parseParensExpr :: Parser Expr
 parseParensExpr = parens $
@@ -170,21 +176,21 @@ parseParensExpr = parens $
   parseLeftSection
   where
     parseOperator = do
-      (line, column) <- getPosition
+      loc <- getLocation
       name <- operator
       parseRightSection name <|>
-        return (Operator name Nothing Nothing, line, column)
+        return (Operator name Nothing Nothing, loc)
 
     parseRightSection name = do
-      (line, column) <- getPosition
+      loc <- getLocation
       x <- parseCallFactor
-      return (Operator name Nothing (Just x), line, column)
+      return (Operator name Nothing (Just x), loc)
 
     parseLeftSection = do
-      (line, column) <- getPosition
+      loc <- getLocation
       x <- parseCallFactor
       name <- operator
-      return (Operator name (Just x) Nothing, line, column)
+      return (Operator name (Just x) Nothing, loc)
 
 parseFactor :: Parser Expr
 parseFactor =
@@ -203,29 +209,29 @@ parseCallFactor = do
   parseCall x <|> return x
   where
     parseCall f = do
-      (line, column) <- getPosition
+      loc <- getLocation
       x <- parseFactor
-      let call = (Call f x, line, column)
+      let call = (Call f x, loc)
       parseCall call <|> return call
 
 parseExpr :: Parser Expr
 parseExpr = do
-  (line, column) <- getPosition
+  loc <- getLocation
   ops <- operatorParsers
-    \n x y -> (Operator n (Just x) (Just y), line, column)
+    \n x y -> (Operator n (Just x) (Just y), loc)
   Ex.buildExpressionParser ops parseCallFactor
 
 parseTRecord :: Parser Type
 parseTRecord = do
-  (line, column) <- getPosition
+  loc <- getLocation
   row <- braces parseType
-  return (TRecord row, line, column)
+  return (TRecord row, loc)
 
 parseTVariant :: Parser Type
 parseTVariant = do
-  (line, column) <- getPosition
+  loc <- getLocation
   row <- brackets parseType
-  return (TVariant row, line, column)
+  return (TVariant row, loc)
 
 parseTFactor :: Parser Type
 parseTFactor =
@@ -240,15 +246,15 @@ parseTCallFactor = do
   parseCall t <|> return t
   where
     parseCall f = do
-      (line, column) <- getPosition
+      loc <- getLocation
       t <- parseTFactor
-      let call = (TCall f t, line, column)
+      let call = (TCall f t, loc)
       parseCall call <|> return call
 
 parseType :: Parser Type
 parseType = do
-  (line, column) <- getPosition
-  ops <- operatorParsers \n x y -> (TOperator n x y, line, column)
+  loc <- getLocation
+  ops <- operatorParsers \n x y -> (TOperator n x y, loc)
   Ex.buildExpressionParser ops parseTCallFactor
 
 parseAny :: Parser Scheme
@@ -422,9 +428,9 @@ parseImport = do
       exposed <- commaSep1 parsePort
       return $ Import modName alias (Just exposed)
 
-operatorParsers :: (Name -> a -> a -> a) -> Parser (Ex.OperatorTable String OpTable Identity a)
+operatorParsers :: (Name -> a -> a -> a) -> Parser (Ex.OperatorTable String ParseState Identity a)
 operatorParsers combine =
-  fmap toList Parsec.getState
+  fmap (toList . fst) Parsec.getState
   where
     toList =
       map (map toParser)
@@ -502,5 +508,5 @@ parseFiles paths = do
   programs <- mapM readFile paths
   let ops = getOptable (unlines programs)
   return $ Monad.zipWithM
-    (Parsec.runParser parseModule ops)
+    (Parsec.runParser parseModule (ops, 0))
     paths programs
