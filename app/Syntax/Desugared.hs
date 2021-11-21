@@ -1,10 +1,12 @@
 {-# LANGUAGE LambdaCase #-}
 
 module Syntax.Desugared
-  ( Expr(..)
+  ( SimpleExpr(..)
+  , Expr
   , Origin(..)
   , TypeVar
-  , Type(..)
+  , SimpleType(..)
+  , Type
   , Scheme(..)
   , Wrapper(..)
   , Module(..)
@@ -17,7 +19,7 @@ import qualified Control.Lens as Lens
 
 import Syntax.Common
 
-data Expr
+data SimpleExpr
   = Int Int
   | Float Double
   | Char Char
@@ -28,17 +30,21 @@ data Expr
   | Lambda Name Expr
   | Call Expr Expr
 
+type Expr = Located SimpleExpr
+
 data Origin = Annotated | Inferred
   deriving (Eq)
 
 type TypeVar = (Name, Origin)
 
-data Type
+data SimpleType
   = TCon Identifier
   | TVar TypeVar
   | TLabel Label
   | TCall Type Type
   deriving (Eq)
+
+type Type = Located SimpleType
 
 data Scheme = Forall [Name] Type
 

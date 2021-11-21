@@ -365,7 +365,7 @@ getSynonymOrder refs
     roots = Map.keysSet (Map.filterWithKey isRoot refs)
     rest = (\\ roots) <$> foldr Map.delete refs roots
 
-variableNames :: F.Expr -> Set Name
+variableNames :: F.SimpleExpr -> Set Name
 variableNames = \case
   F.Int _ -> Set.empty
   F.Float _ -> Set.empty
@@ -377,12 +377,12 @@ variableNames = \case
   F.Identifier _ -> Set.empty
   F.Operator _ _ _ -> Set.empty
 
-  F.DefIn _ x -> variableNames x
-  F.Lambda _ x -> variableNames x
-  F.Call x y -> variableNames x <> variableNames y
+  F.DefIn _ (x, _, _) -> variableNames x
+  F.Lambda _ (x, _, _) -> variableNames x
+  F.Call (x, _, _) (y, _, _) -> variableNames x <> variableNames y
 
 desugarExpr :: F.Expr -> Desugar String Expr
-desugarExpr expr =
+desugarExpr (expr, line, column) =
   case expr of
     F.Int x -> return (Int x)
     F.Float x -> return (Float x)
