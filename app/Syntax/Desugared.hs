@@ -30,7 +30,7 @@ data SimpleExpr
   | Lambda Name Expr
   | Call Expr Expr
 
-type Expr = Located SimpleExpr
+type Expr = (SimpleExpr, Location)
 
 data Origin = Annotated | Inferred
   deriving (Eq)
@@ -44,7 +44,7 @@ data SimpleType
   | TCall Type Type
   deriving (Eq)
 
-type Type = Located SimpleType
+type Type = (SimpleType, Location)
 
 data Scheme = Forall [Name] Type
 

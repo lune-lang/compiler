@@ -16,6 +16,7 @@ type Column = Int
 data Location
   = Real FilePath Line Column Int
   | Fake FilePath Int
+  deriving (Eq)
 
 type Name = String
 type Label = String
