@@ -16,11 +16,11 @@ type Line = Int
 type Column = Int
 
 data Position
-  = Fake
-  | Real Line Column
+  = Fake Int
+  | Real Int Line Column
   deriving (Eq)
 
-type Location = (FilePath, Int, Position)
+type Location = (FilePath, Position)
 
 type Name = String
 type Label = String
