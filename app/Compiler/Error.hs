@@ -51,7 +51,7 @@ import qualified Syntax.Frontend as F
 import Syntax.Desugared
 import Syntax.Common
 
-{--}
+{--
 instance Show Identifier where
   show = \case
     Unqualified n -> parens (operator n) n

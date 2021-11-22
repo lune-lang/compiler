@@ -1,8 +1,7 @@
 module Syntax.Frontend
   ( SimpleExpr(..)
   , Expr
-  , SimpleType(..)
-  , Type
+  , Type(..)
   , Scheme(..)
   , Wrapper(..)
   , LocalDef(..)
@@ -31,15 +30,13 @@ data SimpleExpr
 
 type Expr = (SimpleExpr, Location)
 
-data SimpleType
+data Type
   = TCon Identifier
   | TOperator Name Type Type
   | TLabel Label
   | TRecord Type
   | TVariant Type
   | TCall Type Type
-
-type Type = (SimpleType, Location)
 
 data Scheme = Forall [Name] Type
 

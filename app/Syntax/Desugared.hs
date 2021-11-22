@@ -5,8 +5,7 @@ module Syntax.Desugared
   , Expr
   , Origin(..)
   , TypeVar
-  , SimpleType(..)
-  , Type
+  , Type(..)
   , Scheme(..)
   , Wrapper(..)
   , Module(..)
@@ -30,21 +29,19 @@ data SimpleExpr
   | Lambda Name Expr
   | Call Expr Expr
 
-type Expr = (SimpleExpr, Location)
+type Expr = (SimpleExpr, Location, Int)
 
 data Origin = Annotated | Inferred
   deriving (Eq)
 
 type TypeVar = (Name, Origin)
 
-data SimpleType
+data Type
   = TCon Identifier
   | TVar TypeVar
   | TLabel Label
   | TCall Type Type
   deriving (Eq)
-
-type Type = (SimpleType, Location)
 
 data Scheme = Forall [Name] Type
 

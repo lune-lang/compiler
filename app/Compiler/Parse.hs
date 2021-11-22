@@ -220,19 +220,17 @@ parseExpr = do
 
 parseTRecord :: Parser Type
 parseTRecord = do
-  loc <- getLocation
   row <- braces parseType
-  return (TRecord row, loc)
+  return (TRecord row)
 
 parseTVariant :: Parser Type
 parseTVariant = do
-  loc <- getLocation
   row <- brackets parseType
-  return (TVariant row, loc)
+  return (TVariant row)
 
 parseTFactor :: Parser Type
 parseTFactor =
-  parseIdentifier TLabel TCon <|>
+  fmap fst (parseIdentifier TLabel TCon) <|>
   parseTRecord <|>
   parseTVariant <|>
   parens parseType
@@ -245,13 +243,13 @@ parseTCallFactor = do
     parseCall f = do
       loc <- getLocation
       t <- parseTFactor
-      let call = (TCall f t, loc)
+      let call = TCall f t
       parseCall call <|> return call
 
 parseType :: Parser Type
 parseType = do
   loc <- getLocation
-  ops <- operatorParsers \n x y -> (TOperator n x y, loc)
+  ops <- operatorParsers \n x y -> TOperator n x y
   Ex.buildExpressionParser ops parseTCallFactor
 
 parseAny :: Parser Scheme

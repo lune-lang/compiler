@@ -164,40 +164,41 @@ freshVar origin = do
     rest (Cons _ ns) = ns
 
 inferType :: Expr -> Infer String Type
-inferType = \case
-  Int _ -> freshVar Inferred >>= numberType
-  Float _ -> floatType
-  Char _ -> charType
-  String _ -> stringType
-  Label n -> labelType n
+inferType (expr, _, _) =
+  case expr of
+    Int _ -> freshVar Inferred >>= numberType
+    Float _ -> floatType
+    Char _ -> charType
+    String _ -> stringType
+    Label n -> labelType n
 
-  Identifier n -> do
-    env <- Reader.asks (Lens.view typeEnv)
-    maybe (Error.notDefined n) (instantiate Inferred) (Map.lookup n env)
+    Identifier n -> do
+      env <- Reader.asks (Lens.view typeEnv)
+      maybe (Error.notDefined n) (instantiate Inferred) (Map.lookup n env)
 
-  DefIn n anno x1 x2 -> do
-    var <- freshVar Inferred
-    t <- extendEnv (Unqualified n) (Forall [] var) (inferType x1)
-    unify t var
-    anno' <- mapM (unaliasScheme >=> instantiate Annotated) anno
-    mapM_ (unify t) anno'
-    s <- solve
-    equivalent anno' $ fmap (apply s) anno'
-    Reader.local (Lens.over typeEnv $ apply s) do
-      sc <- generalise (apply s t)
-      extendEnv (Unqualified n) sc (inferType x2)
+    DefIn n anno x1 x2 -> do
+      var <- freshVar Inferred
+      t <- extendEnv (Unqualified n) (Forall [] var) (inferType x1)
+      unify t var
+      anno' <- mapM (unaliasScheme >=> instantiate Annotated) anno
+      mapM_ (unify t) anno'
+      s <- solve
+      equivalent anno' $ fmap (apply s) anno'
+      Reader.local (Lens.over typeEnv $ apply s) do
+        sc <- generalise (apply s t)
+        extendEnv (Unqualified n) sc (inferType x2)
 
-  Lambda n x -> do
-    var <- freshVar Inferred
-    t <- extendEnv (Unqualified n) (Forall [] var) (inferType x)
-    functionType var t
+    Lambda n x -> do
+      var <- freshVar Inferred
+      t <- extendEnv (Unqualified n) (Forall [] var) (inferType x)
+      functionType var t
 
-  Call x1 x2 -> do
-    t1 <- inferType x1
-    t2 <- inferType x2
-    var <- freshVar Inferred
-    functionType t2 var >>= unify t1
-    return var
+    Call x1 x2 -> do
+      t1 <- inferType x1
+      t2 <- inferType x2
+      var <- freshVar Inferred
+      functionType t2 var >>= unify t1
+      return var
 
 unifies :: Maybe Identifier -> Type -> Type -> Infer String Subst
 unifies cons = curry \case

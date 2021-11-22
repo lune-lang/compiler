@@ -32,11 +32,11 @@ import Syntax.Common
 
 type Desugar e = ExceptT e (ReaderT (Map Role Identifier, VarMap) (State Int))
 
-fakeLocation :: FilePath -> Desugar e Location
-fakeLocation file = do
+makeId :: Desugar e Int
+makeId = do
   x <- State.get
   State.modify (+1)
-  return (file, Fake x)
+  return x
 
 type Insert a b = a -> b -> Desugar String a
 
@@ -218,9 +218,8 @@ desugarDefs modName defs = do
         let newAnnos = Map.fromList (zip names' $ repeat tipe') <> annos
         return (newAnnos, funcs, foreigns, types, synonyms)
 
-      F.Func name args body@(_, (file, _)) -> do
+      F.Func name args body@(_, loc) -> do
         let name' = Qualified modName name
-        loc <- fakeLocation file
         body' <- Error.defContext name' $
           desugarExpr (F.Lambda args body, loc)
         let newFuncs = (name', body') : funcs
@@ -274,8 +273,7 @@ desugarLocalDefs defs = do
         let annos = Map.fromList $ zip names (repeat tipe')
         return $ Bf.first (annos <>) defs'
 
-      F.LFunc name args body@(_, (file, _)) -> do
-        loc <- fakeLocation file
+      F.LFunc name args body@(_, loc) -> do
         body' <- desugarExpr (F.Lambda args body, loc)
         return $ Bf.second ((name, body') :) defs'
 
@@ -310,7 +308,7 @@ instance Variable Identifier where
   unqualified = Unqualified
 
 freeVars :: Variable a => Expr -> Set a
-freeVars (expr, _) =
+freeVars (expr, _, _) =
   case expr of
     Int _ -> Set.empty
     Float _ -> Set.empty
@@ -349,12 +347,11 @@ getOrder refs
     rest = (\\ roots) <$> foldr Map.delete refs roots
 
 freeCons :: Type -> Set Identifier
-freeCons (tipe, _) =
-  case tipe of
-    TCon n -> Set.singleton n
-    TVar _ -> Set.empty
-    TLabel _ -> Set.empty
-    TCall func arg -> freeCons func <> freeCons arg
+freeCons = \case
+  TCon n -> Set.singleton n
+  TVar _ -> Set.empty
+  TLabel _ -> Set.empty
+  TCall func arg -> freeCons func <> freeCons arg
 
 arrangeSynonyms :: [(Identifier, [Name], Type)] -> Desugar String [(Identifier, [Name], Type)]
 arrangeSynonyms syns = do
@@ -392,21 +389,24 @@ variableNames (expr, _) =
     F.Identifier _ -> Set.empty
     F.Operator _ _ _ -> Set.empty
 
-    F.DefIn _ x -> variableNames x
+    F.DefIn ds x -> foldMap variablesDef ds <> variableNames x
     F.Lambda _ x -> variableNames x
     F.Call x y -> variableNames x <> variableNames y
+  where
+    variablesDef = \case
+       F.LAnnotation _ _ -> Set.empty
+       F.LFunc _ _ x -> variableNames x
 
 desugarExpr :: F.Expr -> Desugar String Expr
-desugarExpr (expr, location@(file, _)) =
+desugarExpr (expr, loc) =
   case expr of
-    F.Int x -> return (Int x, location)
-    F.Float x -> return (Float x, location)
-    F.Char x -> return (Char x, location)
-    F.String x -> return (String x, location)
-    F.Label x -> return (Label x, location)
+    F.Int x -> withId (Int x)
+    F.Float x -> withId (Float x)
+    F.Char x -> withId (Char x)
+    F.String x -> withId (String x)
+    F.Label x -> withId (Label x)
 
-    F.Identifier name ->
-      ifDefined name id
+    F.Identifier name -> ifDefined name id
 
     F.Negate value -> do
       (syntax, vars) <- Reader.ask
@@ -414,8 +414,8 @@ desugarExpr (expr, location@(file, _)) =
       case Map.lookup NegateFunction syntax of
         Nothing -> Error.negateFunction
         Just name | name `elem` fst vars -> do
-          loc <- fakeLocation file
-          return (Call (Identifier name, loc) value', location)
+          id1 <- makeId
+          withId $ Call (Identifier name, loc, id1) value'
         Just name -> Error.notDefined name
 
     F.Operator name Nothing Nothing ->
@@ -423,62 +423,64 @@ desugarExpr (expr, location@(file, _)) =
 
     F.Operator name (Just x) Nothing -> do
       x' <- desugarExpr x
-      loc <- fakeLocation file
+      id1 <- makeId
       ifDefined (Unqualified name)
-        \sub -> Call (sub, loc) x'
+        \sub -> Call (sub, loc, id1) x'
 
     F.Operator name Nothing (Just x) -> do
       x' <- desugarExpr x
-      loc1 <- fakeLocation file
-      loc2 <- fakeLocation file
-      loc3 <- fakeLocation file
-      loc4 <- fakeLocation file
+      id1 <- makeId
+      id2 <- makeId
+      id3 <- makeId
+      id4 <- makeId
       ifDefined (Unqualified name)
-        \sub -> Lambda var
-          (Call (Call (sub, loc1) (varRef, loc2), loc3) x', loc4)
+        \sub -> Lambda safeVar
+          (Call (Call (sub, loc, id1) (varRef, loc, id2), loc, id3)
+            x', loc, id4)
 
     F.Operator name (Just x) (Just y) -> do
       x' <- desugarExpr x
       y' <- desugarExpr y
-      loc1 <- fakeLocation file
-      loc2 <- fakeLocation file
+      id1 <- makeId
+      id2 <- makeId
       ifDefined (Unqualified name)
-        \sub -> Call (Call (sub, loc1) x', loc2) y'
+        \sub -> Call (Call (sub, loc, id1) x', loc, id2) y'
 
     F.DefIn defs body -> do
       local <- Monad.foldM insertLocalDef emptyVars defs
       Reader.local (Bf.second (local <>)) do
         defs' <- desugarLocalDefs defs
         body' <- desugarExpr body
-        let defIn (n, a, b) x = (DefIn n a b x,) <$> fakeLocation file
+        let defIn (n, a, b) x = withId (DefIn n a b x)
         Fold.foldrM defIn body' defs'
 
     F.Lambda args body -> do
       local <- Monad.foldM insertLocalValue emptyVars args
       Reader.local (Bf.second (local <>)) do
         body' <- desugarExpr body
-        let lambda n x = (Lambda n x,) <$> fakeLocation file
+        let lambda n x = withId (Lambda n x)
         Fold.foldrM lambda body' args
 
-    F.Call func arg -> Call
-      <$> desugarExpr func
-      <*> desugarExpr arg
+    F.Call func arg -> do
+      func' <- desugarExpr func
+      arg' <- desugarExpr arg
+      withId (Call func' arg')
 
     where
-      var =
+      withId x = (x, loc,) <$> makeId
+
+      safeVar =
         [1..] >>= flip Monad.replicateM ['a'..'z']
-        & filter (\n -> Set.notMember n $ variableNames expr)
+        & filter (\n -> Set.notMember n $ variableNames (expr, loc))
         & head
 
-      varRef = Identifier (Unqualified var)
-
-      call2 f x y = Call (Call f x) y
+      varRef = Identifier (Unqualified safeVar)
 
       ifDefined name f = do
         vars <- Reader.asks snd :: Desugar String VarMap
         case Map.lookup name (fst vars) of
           Nothing -> Error.notDefined name
-          Just sub -> return (f (Identifier sub), location)
+          Just sub -> withId $ f (Identifier sub)
 
 desugarScheme :: F.Scheme -> Desugar String Scheme
 desugarScheme (F.Forall as tipe) =
@@ -489,14 +491,13 @@ desugarType as = \case
   F.TCon (Unqualified name) | name `elem` as ->
     return $ TVar (name, Annotated)
 
-  F.TCon name ->
-    ifDefined name id
+  F.TCon name -> ifDefined name id
 
   F.TOperator name x y -> do
     x' <- desugarType as x
     y' <- desugarType as y
     ifDefined (Unqualified name)
-      \sub -> call2 sub x' y'
+      \sub -> TCall (TCall sub x') y'
 
   F.TLabel x -> return (TLabel x)
 
@@ -505,7 +506,8 @@ desugarType as = \case
     row' <- desugarType as row
     case Map.lookup CurlyBrackets syntax of
       Nothing -> Error.curlyBrackets
-      Just name | name `elem` snd vars -> return $ TCall (TCon name) row'
+      Just name | name `elem` snd vars -> do
+        return $ TCall (TCon name) row'
       Just name -> Error.notDefined name
 
   F.TVariant row -> do
@@ -513,7 +515,8 @@ desugarType as = \case
     row' <- desugarType as row
     case Map.lookup SquareBrackets syntax of
       Nothing -> Error.squareBrackets
-      Just name | name `elem` snd vars -> return $ TCall (TCon name) row'
+      Just name | name `elem` snd vars -> do
+        return $ TCall (TCon name) row'
       Just name -> Error.notDefined name
 
   F.TCall func arg -> TCall
@@ -521,8 +524,6 @@ desugarType as = \case
     <*> desugarType as arg
 
   where
-    call2 f x y = TCall (TCall f x) y
-
     ifDefined name f = do
       vars <- Reader.asks snd :: Desugar String VarMap
       case Map.lookup name (snd vars) of
@@ -541,7 +542,7 @@ desugarModule interfaces modName m = do
 
 desugarModules :: Map ModName F.Module -> Either Error.Context Module
 desugarModules modules =
-  Reader.runReader (Except.runExceptT desugar) (Map.empty, emptyVars)
+  State.evalState (Reader.runReaderT (Except.runExceptT desugar) (Map.empty, emptyVars)) 0
   where
     desugar = do
       interfaces <- sequence (Map.mapWithKey getInterface modules)

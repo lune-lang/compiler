@@ -83,16 +83,17 @@ makeValid name
       ]
 
 genExpr :: Expr -> String
-genExpr = \case
-  Int x -> show x
-  Float x -> show x
-  Char x -> show x
-  String x -> show x
-  Label x -> show x
-  Identifier n -> genIdentifier n
-  DefIn n _ x y -> genDefIn n x y
-  Lambda n x -> genLambda n x
-  Call f x -> genCall f x
+genExpr (expr, _, _) =
+  case expr of
+    Int x -> show x
+    Float x -> show x
+    Char x -> show x
+    String x -> show x
+    Label x -> show x
+    Identifier n -> genIdentifier n
+    DefIn n _ x y -> genDefIn n x y
+    Lambda n x -> genLambda n x
+    Call f x -> genCall f x
 
 genIdentifier :: Identifier -> String
 genIdentifier = \case
