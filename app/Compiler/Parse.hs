@@ -26,10 +26,9 @@ import Syntax.Common
 import Syntax.Frontend
 
 type OpTable = Map Name (Ex.Assoc, Int)
-type ParseState = (OpTable, Int)
-type Parser a = Parsec String ParseState a
+type Parser a = Parsec String OpTable a
 
-lexerStyle :: Token.LanguageDef ParseState
+lexerStyle :: Token.LanguageDef OpTable
 lexerStyle = Token.LanguageDef
   { Token.commentStart = "[-"
   , Token.commentEnd = "-]"
@@ -66,7 +65,7 @@ lexerStyle = Token.LanguageDef
   , Token.caseSensitive = True
   }
 
-lexer :: Token.TokenParser ParseState
+lexer :: Token.TokenParser OpTable
 lexer = Token.makeTokenParser lexerStyle
 
 Token.TokenParser
@@ -91,9 +90,7 @@ getLocation = do
   let file = Parsec.sourceName position
   let line = Parsec.sourceLine position
   let column = Parsec.sourceColumn position
-  state <- Parsec.getState
-  Parsec.modifyState $ Bf.second (+1)
-  return (file, Real (snd state) line column)
+  return (file, line, column)
 
 identifierLower :: Parser String
 identifierLower = do
@@ -428,9 +425,9 @@ parseImport = do
       exposed <- commaSep1 parsePort
       return $ Import modName alias (Just exposed)
 
-operatorParsers :: (Name -> a -> a -> a) -> Parser (Ex.OperatorTable String ParseState Identity a)
+operatorParsers :: (Name -> a -> a -> a) -> Parser (Ex.OperatorTable String OpTable Identity a)
 operatorParsers combine =
-  fmap (toList . fst) Parsec.getState
+  fmap toList Parsec.getState
   where
     toList =
       map (map toParser)
@@ -508,5 +505,5 @@ parseFiles paths = do
   programs <- mapM readFile paths
   let ops = getOptable (unlines programs)
   return $ Monad.zipWithM
-    (Parsec.runParser parseModule (ops, 0))
+    (Parsec.runParser parseModule ops)
     paths programs
