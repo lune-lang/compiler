@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE FlexibleInstances #-}
 
@@ -19,15 +20,23 @@ import Data.Set (Set, (\\))
 
 import qualified Control.Monad.Except as Except
 import qualified Control.Monad.Reader as Reader
+import qualified Control.Monad.State as State
 import Control.Monad.Except (ExceptT)
-import Control.Monad.Reader (Reader)
+import Control.Monad.Reader (ReaderT)
+import Control.Monad.State (State)
 
 import qualified Compiler.Error as Error
 import qualified Syntax.Frontend as F
 import Syntax.Desugared
 import Syntax.Common
 
-type Desugar e = ExceptT e (Reader (Map Role Identifier, VarMap))
+type Desugar e = ExceptT e (ReaderT (Map Role Identifier, VarMap) (State Int))
+
+fakeLocation :: FilePath -> Desugar e Location
+fakeLocation file = do
+  x <- State.get
+  State.modify (+1)
+  return (file, Fake x)
 
 type Insert a b = a -> b -> Desugar String a
 
@@ -209,9 +218,11 @@ desugarDefs modName defs = do
         let newAnnos = Map.fromList (zip names' $ repeat tipe') <> annos
         return (newAnnos, funcs, foreigns, types, synonyms)
 
-      F.Func name args body -> do
+      F.Func name args body@(_, (file, _)) -> do
         let name' = Qualified modName name
-        body' <- Error.defContext name' $ desugarExpr (F.Lambda args body)
+        loc <- fakeLocation file
+        body' <- Error.defContext name' $
+          desugarExpr (F.Lambda args body, loc)
         let newFuncs = (name', body') : funcs
         return (annos, newFuncs, foreigns, types, synonyms)
 
@@ -263,8 +274,9 @@ desugarLocalDefs defs = do
         let annos = Map.fromList $ zip names (repeat tipe')
         return $ Bf.first (annos <>) defs'
 
-      F.LFunc name args body -> do
-        body' <- desugarExpr (F.Lambda args body)
+      F.LFunc name args body@(_, (file, _)) -> do
+        loc <- fakeLocation file
+        body' <- desugarExpr (F.Lambda args body, loc)
         return $ Bf.second ((name, body') :) defs'
 
 existsAnno :: (Eq a, Error.NameError a) => [a] -> a -> Desugar String ()
@@ -298,22 +310,23 @@ instance Variable Identifier where
   unqualified = Unqualified
 
 freeVars :: Variable a => Expr -> Set a
-freeVars = \case
-  Int _ -> Set.empty
-  Float _ -> Set.empty
-  Char _ -> Set.empty
-  String _ -> Set.empty
-  Label _ -> Set.empty
+freeVars (expr, _) =
+  case expr of
+    Int _ -> Set.empty
+    Float _ -> Set.empty
+    Char _ -> Set.empty
+    String _ -> Set.empty
+    Label _ -> Set.empty
 
-  Identifier n -> fromIdentifier n
+    Identifier n -> fromIdentifier n
 
-  DefIn name _ value body -> Set.delete (unqualified name)
-    (freeVars value <> freeVars body)
+    DefIn name _ value body -> Set.delete (unqualified name)
+      (freeVars value <> freeVars body)
 
-  Lambda name body -> Set.delete (unqualified name)
-    (freeVars body)
+    Lambda name body -> Set.delete (unqualified name)
+      (freeVars body)
 
-  Call func arg -> freeVars func <> freeVars arg
+    Call func arg -> freeVars func <> freeVars arg
 
 arrange :: Variable a => [(a, Maybe Scheme, Expr)] -> Desugar String [(a, Maybe Scheme, Expr)]
 arrange funcs = do
@@ -336,11 +349,12 @@ getOrder refs
     rest = (\\ roots) <$> foldr Map.delete refs roots
 
 freeCons :: Type -> Set Identifier
-freeCons = \case
-  TCon n -> Set.singleton n
-  TVar _ -> Set.empty
-  TLabel _ -> Set.empty
-  TCall func arg -> freeCons func <> freeCons arg
+freeCons (tipe, _) =
+  case tipe of
+    TCon n -> Set.singleton n
+    TVar _ -> Set.empty
+    TLabel _ -> Set.empty
+    TCall func arg -> freeCons func <> freeCons arg
 
 arrangeSynonyms :: [(Identifier, [Name], Type)] -> Desugar String [(Identifier, [Name], Type)]
 arrangeSynonyms syns = do
@@ -365,30 +379,31 @@ getSynonymOrder refs
     roots = Map.keysSet (Map.filterWithKey isRoot refs)
     rest = (\\ roots) <$> foldr Map.delete refs roots
 
-variableNames :: F.SimpleExpr -> Set Name
-variableNames = \case
-  F.Int _ -> Set.empty
-  F.Float _ -> Set.empty
-  F.Char _ -> Set.empty
-  F.String _ -> Set.empty
-  F.Label _ -> Set.empty
+variableNames :: F.Expr -> Set Name
+variableNames (expr, _) =
+  case expr of
+    F.Int _ -> Set.empty
+    F.Float _ -> Set.empty
+    F.Char _ -> Set.empty
+    F.String _ -> Set.empty
+    F.Label _ -> Set.empty
 
-  F.Identifier (Unqualified n) -> Set.singleton n
-  F.Identifier _ -> Set.empty
-  F.Operator _ _ _ -> Set.empty
+    F.Identifier (Unqualified n) -> Set.singleton n
+    F.Identifier _ -> Set.empty
+    F.Operator _ _ _ -> Set.empty
 
-  F.DefIn _ (x, _, _) -> variableNames x
-  F.Lambda _ (x, _, _) -> variableNames x
-  F.Call (x, _, _) (y, _, _) -> variableNames x <> variableNames y
+    F.DefIn _ x -> variableNames x
+    F.Lambda _ x -> variableNames x
+    F.Call x y -> variableNames x <> variableNames y
 
 desugarExpr :: F.Expr -> Desugar String Expr
-desugarExpr (expr, line, column) =
+desugarExpr (expr, location@(file, _)) =
   case expr of
-    F.Int x -> return (Int x)
-    F.Float x -> return (Float x)
-    F.Char x -> return (Char x)
-    F.String x -> return (String x)
-    F.Label x -> return (Label x)
+    F.Int x -> return (Int x, location)
+    F.Float x -> return (Float x, location)
+    F.Char x -> return (Char x, location)
+    F.String x -> return (String x, location)
+    F.Label x -> return (Label x, location)
 
     F.Identifier name ->
       ifDefined name id
@@ -398,8 +413,9 @@ desugarExpr (expr, line, column) =
       value' <- desugarExpr value
       case Map.lookup NegateFunction syntax of
         Nothing -> Error.negateFunction
-        Just name | name `elem` fst vars ->
-          return $ Call (Identifier name) value'
+        Just name | name `elem` fst vars -> do
+          loc <- fakeLocation file
+          return (Call (Identifier name, loc) value', location)
         Just name -> Error.notDefined name
 
     F.Operator name Nothing Nothing ->
@@ -407,33 +423,42 @@ desugarExpr (expr, line, column) =
 
     F.Operator name (Just x) Nothing -> do
       x' <- desugarExpr x
+      loc <- fakeLocation file
       ifDefined (Unqualified name)
-        \sub -> Call sub x'
+        \sub -> Call (sub, loc) x'
 
     F.Operator name Nothing (Just x) -> do
       x' <- desugarExpr x
+      loc1 <- fakeLocation file
+      loc2 <- fakeLocation file
+      loc3 <- fakeLocation file
+      loc4 <- fakeLocation file
       ifDefined (Unqualified name)
-        \sub -> Lambda var (call2 sub varRef x')
+        \sub -> Lambda var
+          (Call (Call (sub, loc1) (varRef, loc2), loc3) x', loc4)
 
     F.Operator name (Just x) (Just y) -> do
       x' <- desugarExpr x
       y' <- desugarExpr y
+      loc1 <- fakeLocation file
+      loc2 <- fakeLocation file
       ifDefined (Unqualified name)
-        \sub -> call2 sub x' y'
+        \sub -> Call (Call (sub, loc1) x', loc2) y'
 
     F.DefIn defs body -> do
       local <- Monad.foldM insertLocalDef emptyVars defs
       Reader.local (Bf.second (local <>)) do
         defs' <- desugarLocalDefs defs
         body' <- desugarExpr body
-        let defIn (n, a, b) = DefIn n a b
-        return (foldr defIn body' defs')
+        let defIn (n, a, b) x = (DefIn n a b x,) <$> fakeLocation file
+        Fold.foldrM defIn body' defs'
 
     F.Lambda args body -> do
       local <- Monad.foldM insertLocalValue emptyVars args
       Reader.local (Bf.second (local <>)) do
         body' <- desugarExpr body
-        return (foldr Lambda body' args)
+        let lambda n x = (Lambda n x,) <$> fakeLocation file
+        Fold.foldrM lambda body' args
 
     F.Call func arg -> Call
       <$> desugarExpr func
@@ -453,7 +478,7 @@ desugarExpr (expr, line, column) =
         vars <- Reader.asks snd :: Desugar String VarMap
         case Map.lookup name (fst vars) of
           Nothing -> Error.notDefined name
-          Just sub -> return $ f (Identifier sub)
+          Just sub -> return (f (Identifier sub), location)
 
 desugarScheme :: F.Scheme -> Desugar String Scheme
 desugarScheme (F.Forall as tipe) =
