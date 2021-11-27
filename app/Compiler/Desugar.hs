@@ -57,6 +57,10 @@ data VarMap = VarMap
 
 Lens.makeLenses ''VarMap
 
+instance Semigroup VarMap where
+  VarMap v1 t1 <> VarMap v2 t2 =
+    VarMap (v1 <> v2) (t1 <> t2)
+
 emptyVars :: VarMap
 emptyVars = VarMap Map.empty Map.empty
 
@@ -381,11 +385,12 @@ getOrder refs
     rest = Bf.first (\\ roots) <$> foldr Map.delete refs roots
 
 freeCons :: Type -> Set Identifier
-freeCons = \case
-  TCon n -> Set.singleton n
-  TVar _ -> Set.empty
-  TLabel _ -> Set.empty
-  TCall func arg -> freeCons func <> freeCons arg
+freeCons (tipe, _) =
+  case tipe of
+    TCon n -> Set.singleton n
+    TVar _ -> Set.empty
+    TLabel _ -> Set.empty
+    TCall func arg -> freeCons func <> freeCons arg
 
 arrangeSynonyms :: [(Identifier, [Name], Type, Location)] -> Desugar [(Identifier, [Name], Type, Location)]
 arrangeSynonyms syns = do
@@ -513,7 +518,7 @@ desugarExpr (expr, loc) =
       varRef = Identifier (Unqualified safeVar)
 
       ifDefined name f = do
-        vars <- Reader.asks snd :: Desugar VarMap
+        vars <- Reader.asks snd
         case Map.lookup name (Lens.view valueSubs vars) of
           Nothing -> Error.withLocation loc (Error.notDefined name)
           Just sub -> withId $ f (Identifier sub)
@@ -526,7 +531,7 @@ desugarType :: [Name] -> F.Type -> Desugar Type
 desugarType as (tipe, loc) =
   case tipe of
     F.TCon (Unqualified name) | name `elem` as ->
-      return $ TVar (name, Annotated)
+      return (TVar name, loc)
 
     F.TCon name -> ifDefined name id
 
@@ -534,9 +539,9 @@ desugarType as (tipe, loc) =
       x' <- desugarType as x
       y' <- desugarType as y
       ifDefined (Unqualified name)
-        \sub -> TCall (TCall sub x') y'
+        \sub -> TCall (TCall (sub, loc) x', loc) y'
 
-    F.TLabel x -> return (TLabel x)
+    F.TLabel x -> return (TLabel x, loc)
 
     F.TRecord row -> do
       (syntax, vars) <- Reader.ask
@@ -544,7 +549,7 @@ desugarType as (tipe, loc) =
       case Map.lookup CurlyBrackets syntax of
         Nothing -> Error.withLocation loc Error.curlyBrackets
         Just name | name `elem` Lens.view typeSubs vars -> do
-          return $ TCall (TCon name) row'
+          return (TCall (TCon name, loc) row', loc)
         Just name -> Error.withLocation loc (Error.notDefined name)
 
     F.TVariant row -> do
@@ -553,19 +558,20 @@ desugarType as (tipe, loc) =
       case Map.lookup SquareBrackets syntax of
         Nothing -> Error.withLocation loc Error.squareBrackets
         Just name | name `elem` Lens.view typeSubs vars -> do
-          return $ TCall (TCon name) row'
+          return (TCall (TCon name, loc) row', loc)
         Just name -> Error.withLocation loc (Error.notDefined name)
 
-    F.TCall func arg -> TCall
-      <$> desugarType as func
-      <*> desugarType as arg
+    F.TCall func arg -> do
+      func' <- desugarType as func
+      arg' <- desugarType as arg
+      return (TCall func' arg', loc)
 
   where
     ifDefined name f = do
-      vars <- Reader.ask
+      vars <- Reader.asks snd
       case Map.lookup name (Lens.view typeSubs vars) of
         Nothing -> Error.withLocation loc (Error.notDefined name)
-        Just sub -> return $ f (TCon sub)
+        Just sub -> return (f $ TCon sub, loc)
 
 desugarModule :: Map ModName Interface -> ModName -> F.Module -> Desugar Module
 desugarModule interfaces modName m = do
@@ -595,18 +601,19 @@ hasMain :: Map ModName Interface -> Desugar ()
 hasMain interfaces =
   case Map.lookup "Main" interfaces of
     Nothing -> Error.noMainModule
-    Just (funcs, _) | "main" `elem` funcs -> return ()
+    Just (Interface funcs _) | "main" `elem` map fst funcs -> return ()
     Just _ -> Error.noMainFunction
 
 noRepeatedInfix :: [F.Def] -> Desugar ()
 noRepeatedInfix =
   Monad.foldM_ addInfix []
   where
-    addInfix ops = \case
-      F.Infix name
-        | name `elem` ops -> Error.multipleInfix name
-        | otherwise -> return (name : ops)
-      _ -> return ops :: Desugar [Name]
+    addInfix ops (def, loc) =
+      case def of
+        F.Infix name
+          | name `elem` ops -> Error.withLocation loc (Error.multipleInfix name)
+          | otherwise -> return (name : ops)
+        _ -> return ops :: Desugar [Name]
 
 getSyntaxMap :: Map ModName [F.Def] -> Desugar (Map Role Identifier)
 getSyntaxMap modules = do
@@ -616,10 +623,11 @@ getSyntaxMap modules = do
     pair m ds = zip (repeat m) ds
     defs = Fold.fold (Map.mapWithKey pair modules)
 
-    addSyntax (roles, syntax) = \case
-      (modName, F.Syntax name role) ->
-        let name' = Qualified modName name in
-        if role `elem` roles
-          then Error.conflictingSyntax name'
-          else return (role : roles, Map.insert role name' syntax)
-      _ -> return (roles, syntax)
+    addSyntax (roles, syntax) (modName, (def, loc)) =
+      case def of
+        F.Syntax name role ->
+          let name' = Qualified modName name in
+          if role `elem` roles
+            then Error.withLocation loc (Error.conflictingSyntax name')
+            else return (role : roles, Map.insert role name' syntax)
+        _ -> return (roles, syntax)

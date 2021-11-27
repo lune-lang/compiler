@@ -130,7 +130,7 @@ modNames m =
   & List.nub
   where
     foreigns = Map.keys (getForeigns m)
-    funcs = map (\(n, _, _) -> n) (getFuncs m)
+    funcs = map (\(n, _, _, _) -> n) (getFuncs m)
 
 genModuleDef :: ModName -> String
 genModuleDef m = concat
@@ -171,7 +171,7 @@ genModule js m = concat
 
     funcDefs =
       getFuncs m
-      & map (\(n, _, x) -> (n, x))
+      & map (\(n, _, x, _) -> (n, x))
       & concatMap (uncurry genFunc)
 
     wrapperDefs =

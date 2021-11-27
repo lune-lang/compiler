@@ -48,8 +48,8 @@ import qualified Control.Monad.Except as Except
 import Control.Monad.Except (ExceptT, MonadError)
 
 import qualified Syntax.Frontend as F
-import Syntax.Desugared
 import Syntax.Common
+import Syntax.Inferred
 
 {--
 instance Show Identifier where

@@ -3,9 +3,8 @@
 module Syntax.Desugared
   ( SimpleExpr(..)
   , Expr
-  , Origin(..)
-  , TypeVar
-  , Type(..)
+  , SimpleType(..)
+  , Type
   , Scheme(..)
   , Wrapper(..)
   , Module(..)
@@ -31,17 +30,14 @@ data SimpleExpr
 
 type Expr = (SimpleExpr, Location, Int)
 
-data Origin = Annotated | Inferred
-  deriving (Eq)
-
-type TypeVar = (Name, Origin)
-
-data Type
+data SimpleType
   = TCon Identifier
-  | TVar TypeVar
+  | TVar Name
   | TLabel Label
   | TCall Type Type
   deriving (Eq)
+
+type Type = (SimpleType, Location)
 
 data Scheme = Forall [Name] Type
 
