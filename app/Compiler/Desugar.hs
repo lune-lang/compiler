@@ -2,6 +2,8 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Compiler.Desugar (desugarModules) where
 
@@ -30,166 +32,189 @@ import qualified Syntax.Frontend as F
 import Syntax.Desugared
 import Syntax.Common
 
-type Desugar e = ExceptT e (ReaderT (Map Role Identifier, VarMap) (State Int))
+import qualified Control.Lens as Lens
 
-makeId :: Desugar e Int
+data Interface = Interface
+  { _values :: [(Name, Location)]
+  , _types :: [(Name, Location)]
+  }
+
+Lens.makeLenses ''Interface
+
+emptyInterface :: Interface
+emptyInterface = Interface [] []
+
+getValueNames :: Interface -> [Name]
+getValueNames = map fst . Lens.view values
+
+getTypeNames :: Interface -> [Name]
+getTypeNames = map fst . Lens.view types
+
+data VarMap = VarMap
+  { _valueSubs :: Map Identifier Identifier
+  , _typeSubs :: Map Identifier Identifier
+  }
+
+Lens.makeLenses ''VarMap
+
+emptyVars :: VarMap
+emptyVars = VarMap Map.empty Map.empty
+
+type Desugar = ExceptT Error.Msg (ReaderT (Map Role Identifier, VarMap) (State Int))
+
+makeId :: Desugar Int
 makeId = do
   x <- State.get
   State.modify (+1)
   return x
 
-type Insert a b = a -> b -> Desugar String a
+type Insert a b = a -> b -> Desugar a
 
-type Interface = ([Name], [Name])
+insertValue :: Insert Interface (Name, Location)
+insertValue interface (name, loc) =
+  if name `elem` getValueNames interface
+    then Error.withLocation loc (Error.multipleDef name)
+    else return $ Lens.over values ((name, loc):) interface
 
-emptyInterface :: Interface
-emptyInterface = ([], [])
+insertType :: Insert Interface (Name, Location)
+insertType interface (name, loc) =
+  if name `elem` getTypeNames interface
+    then Error.withLocation loc (Error.multipleDef name)
+    else return $ Lens.over types ((name, loc):) interface
 
-insertValue :: Insert Interface Name
-insertValue interface name =
-  if name `elem` fst interface
-    then Error.multipleDef name
-    else return $ Bf.first (name:) interface
-
-insertType :: Insert Interface Name
-insertType interface name =
-  if name `elem` snd interface
-    then Error.multipleDef name
-    else return $ Bf.second (name:) interface
-
-insertDef :: [F.Port] -> Insert Interface F.Def
-insertDef exports interface = \case
-  F.Annotation _ _ -> return interface
-  F.Func name _ _ -> valueDef interface name
-  F.Foreign name _ _ -> valueDef interface name
-  F.Type name _ Nothing -> typeDef interface name
-  F.Type name _ (Just (F.Wrapper _ _ maker getter)) -> do
-    interface' <- typeDef interface name
-    interface'' <- valueDef interface' maker
-    Monad.foldM valueDef interface'' getter
-  F.Synonym name _ _ -> typeDef interface name
-  F.Infix _ -> return interface
-  F.Syntax _ _ -> return interface
+insertDef :: [F.SimplePort] -> Insert Interface F.Def
+insertDef exports interface (def, loc) =
+  case def of
+    F.Annotation _ _ -> return interface
+    F.Func name _ _ -> valueDef interface (name, loc)
+    F.Foreign name _ _ -> valueDef interface (name, loc)
+    F.Type name _ Nothing -> typeDef interface (name, loc)
+    F.Type name _ (Just (F.Wrapper _ _ maker getter)) -> do
+      interface' <- typeDef interface (name, loc)
+      interface'' <- valueDef interface' maker
+      Monad.foldM valueDef interface'' getter
+    F.Synonym name _ _ -> typeDef interface (name, loc)
+    F.Infix _ -> return interface
+    F.Syntax _ _ -> return interface
   where
-    valueDef interface' name =
+    valueDef interface' (name, loc) =
       if F.ValuePort name `elem` exports
-        then insertValue interface' name
+        then insertValue interface' (name, loc)
         else return interface'
 
-    typeDef interface' name =
+    typeDef interface' (name, loc) =
       if F.TypePort name `elem` exports
-        then insertType interface' name
+        then insertType interface' (name, loc)
         else return interface'
 
-addExport :: [F.Port] -> [F.Port] -> F.Port -> Desugar String [F.Port]
-addExport available exports e
-  | e `elem` exports = Error.multipleExport e
+addExport :: [F.SimplePort] -> [F.SimplePort] -> F.Port -> Desugar [F.SimplePort]
+addExport available exports (e, loc)
+  | e `elem` exports = Error.withLocation loc (Error.multipleExport e)
   | e `elem` available = return (e : exports)
-  | otherwise = Error.exportFailure e
+  | otherwise = Error.withLocation loc (Error.exportFailure e)
 
-getExports :: F.Module -> Desugar String [F.Port]
+getExports :: F.Module -> Desugar [F.SimplePort]
 getExports m =
   Monad.foldM (addExport available) [] (F.getExports m)
   where
     available = concatMap toPort (F.getDefs m)
-    toPort = \case
-      F.Annotation _ _ -> []
-      F.Func name _ _ -> [F.ValuePort name]
-      F.Foreign name _ _ -> [F.ValuePort name]
-      F.Type name _ Nothing -> [F.TypePort name]
-      F.Type name _ (Just (F.Wrapper _ _ maker getter)) ->
-        [ F.TypePort name, F.ValuePort maker ] ++
-        map F.ValuePort (Maybe.maybeToList getter)
-      F.Synonym name _ _ -> [F.TypePort name]
-      F.Infix _ -> []
-      F.Syntax _ _ -> []
+    toPort (def, _) =
+      case def of
+        F.Annotation _ _ -> []
+        F.Func name _ _ -> [F.ValuePort name]
+        F.Foreign name _ _ -> [F.ValuePort name]
+        F.Type name _ Nothing -> [F.TypePort name]
+        F.Type name _ (Just (F.Wrapper _ _ maker getter)) ->
+          [ F.TypePort name, F.ValuePort (fst maker) ] ++
+          map (F.ValuePort . fst) (Maybe.maybeToList getter)
+        F.Synonym name _ _ -> [F.TypePort name]
+        F.Infix _ -> []
+        F.Syntax _ _ -> []
 
-getInterface :: ModName -> F.Module -> Desugar Error.Context Interface
-getInterface modName m =
-  Error.moduleContext modName do
-    exports <- getExports m
-    Monad.foldM (insertDef exports) emptyInterface (F.getDefs m)
+getInterface :: ModName -> F.Module -> Desugar Interface
+getInterface modName m = do
+  exports <- getExports m
+  Monad.foldM (insertDef exports) emptyInterface (F.getDefs m)
 
-type VarMap = (Map Identifier Identifier, Map Identifier Identifier)
+insertValueSub :: Location -> Insert VarMap (Identifier, Identifier)
+insertValueSub loc vars (name, sub) =
+  if Map.member name (Lens.view valueSubs vars)
+    then Error.withLocation loc (Error.multipleDef name)
+    else return $ Lens.over valueSubs (Map.insert name sub) vars
 
-emptyVars :: VarMap
-emptyVars = (Map.empty, Map.empty)
+insertTypeSub :: Location -> Insert VarMap (Identifier, Identifier)
+insertTypeSub loc vars (name, sub) =
+  if Map.member name (Lens.view typeSubs vars)
+    then Error.withLocation loc (Error.multipleDef name)
+    else return $ Lens.over typeSubs (Map.insert name sub) vars
 
-insertValueSub :: Insert VarMap (Identifier, Identifier)
-insertValueSub vars (name, sub) =
-  if Map.member name (fst vars)
-    then Error.multipleDef name
-    else return $ Bf.first (Map.insert name sub) vars
+insertLocalValue :: Insert VarMap (Name, Location)
+insertLocalValue vars (name, loc) =
+  insertValueSub loc vars (Unqualified name, Unqualified name)
 
-insertTypeSub :: Insert VarMap (Identifier, Identifier)
-insertTypeSub vars (name, sub) =
-  if Map.member name (snd vars)
-    then Error.multipleDef name
-    else return $ Bf.second (Map.insert name sub) vars
+insertImportValue :: (Name -> Identifier) -> ModName -> Insert VarMap (Name, Location)
+insertImportValue f modName vars (name, loc) =
+  insertValueSub loc vars (f name, Qualified modName name)
 
-insertLocalValue :: Insert VarMap Name
-insertLocalValue vars name =
-  insertValueSub vars (Unqualified name, Unqualified name)
-
-insertImportValue :: (Name -> Identifier) -> ModName -> Insert VarMap Name
-insertImportValue f modName vars name =
-  insertValueSub vars (f name, Qualified modName name)
-
-insertImportType :: (Name -> Identifier) -> ModName -> Insert VarMap Name
-insertImportType f modName vars name =
-  insertTypeSub vars (f name, Qualified modName name)
+insertImportType :: (Name -> Identifier) -> ModName -> Insert VarMap (Name, Location)
+insertImportType f modName vars (name, loc) =
+  insertTypeSub loc vars (f name, Qualified modName name)
 
 insertInterface :: (Name -> Identifier) -> ModName -> Insert VarMap Interface
-insertInterface f modName vars (values, types) = do
+insertInterface f modName vars (Interface values types) = do
   vars' <- Monad.foldM (insertImportValue f modName) vars values
   Monad.foldM (insertImportType f modName) vars' types
 
 insertExposed :: ModName -> Interface -> Insert VarMap F.Port
-insertExposed modName (values, types) vars = \case
-  F.ValuePort name | name `elem` values ->
-    insertImportValue Unqualified modName vars name
-  F.TypePort name | name `elem` types ->
-    insertImportType Unqualified modName vars name
-  name -> Error.importFailure name
+insertExposed modName interface vars (port, loc) =
+  case port of
+    F.ValuePort name | name `elem` getValueNames interface ->
+      insertImportValue Unqualified modName vars (name, loc)
+    F.TypePort name | name `elem` getTypeNames interface ->
+      insertImportType Unqualified modName vars (name, loc)
+    name -> Error.withLocation loc (Error.importFailure name)
 
 insertImport :: Map ModName Interface -> Insert VarMap F.Import
-insertImport interfaces vars = \case
-  F.ImportOpen modName -> insertModule Unqualified modName []
-  F.Import modName maybeAlias maybeExposed ->
-    let
-      alias = Maybe.fromMaybe modName maybeAlias
-      exposed = Maybe.fromMaybe [] maybeExposed
-    in
-    insertModule (Qualified alias) modName exposed
-  where
-    insertModule f modName exposed =
-      case Map.lookup modName interfaces of
-        Nothing -> Error.noModule modName
-        Just interface -> do
-          vars' <- insertInterface f modName vars interface
-          Monad.foldM (insertExposed modName interface) vars' exposed
+insertImport interfaces vars (imp, loc) =
+  case imp of
+    F.ImportOpen modName -> insertModule Unqualified modName []
+    F.Import modName maybeAlias maybeExposed ->
+      let
+        alias = Maybe.fromMaybe modName maybeAlias
+        exposed = Maybe.fromMaybe [] maybeExposed
+      in
+      insertModule (Qualified alias) modName exposed
+    where
+      insertModule f modName exposed =
+        case Map.lookup modName interfaces of
+          Nothing -> Error.withLocation loc (Error.noModule modName)
+          Just interface -> do
+            vars' <- insertInterface f modName vars interface
+            Monad.foldM (insertExposed modName interface) vars' exposed
 
 insertTopLevelDef :: ModName -> Insert VarMap F.Def
-insertTopLevelDef modName vars = \case
-  F.Annotation _ _ -> return vars
-  F.Func name _ _ -> addValue vars name
-  F.Foreign name _ _ -> addValue vars name
-  F.Type name _ Nothing -> addType vars name
-  F.Type name _ (Just (F.Wrapper _ _ maker getter)) -> do
-    vars' <- addType vars name
-    vars'' <- addValue vars' maker
-    Monad.foldM addValue vars'' getter
-  F.Synonym name _ _ -> addType vars name
-  F.Infix _ -> return vars
-  F.Syntax _ _ -> return vars
-  where
-    addType = insertImportType Unqualified modName
-    addValue = insertImportValue Unqualified modName
+insertTopLevelDef modName vars (def, loc) =
+  case def of
+    F.Annotation _ _ -> return vars
+    F.Func name _ _ -> addValue vars (name, loc)
+    F.Foreign name _ _ -> addValue vars (name, loc)
+    F.Type name _ Nothing -> addType vars (name, loc)
+    F.Type name _ (Just (F.Wrapper _ _ maker getter)) -> do
+      vars' <- addType vars (name, loc)
+      vars'' <- addValue vars' maker
+      Monad.foldM addValue vars'' getter
+    F.Synonym name _ _ -> addType vars (name, loc)
+    F.Infix _ -> return vars
+    F.Syntax _ _ -> return vars
+    where
+      addType = insertImportType Unqualified modName
+      addValue = insertImportValue Unqualified modName
 
 insertLocalDef :: Insert VarMap F.LocalDef
-insertLocalDef vars = \case
-  F.LAnnotation _ _ -> return vars
-  F.LFunc name _ _ -> insertLocalValue vars name
+insertLocalDef vars (def, loc) =
+  case def of
+    F.LAnnotation _ _ -> return vars
+    F.LFunc name _ _ -> insertLocalValue vars (name, loc)
 
 makeJavascript :: [Name] -> String -> String
 makeJavascript args body =
@@ -201,96 +226,104 @@ makeJavascript args body =
       , "; }"
       ]
 
-desugarDefs :: ModName -> [F.Def] -> Desugar Error.Context Module
+desugarDefs :: ModName -> [F.Def] -> Desugar Module
 desugarDefs modName defs = do
   (annos, funcs, foreigns, types, synonyms) <-
     Monad.foldM addDef (Map.empty, [], Map.empty, Map.empty, []) defs
-  Error.moduleContext modName $ mapM_ (existsAnno $ map fst funcs ++ Map.keys foreigns) (Map.keys annos)
+  let funcNames = map (\(n, _, _) -> n) funcs
+  let foreignNames = map fst (Map.keys foreigns)
+  mapM_ (existsAnno $ funcNames ++ foreignNames) (Map.keys annos)
   let funcs' = mergeAnnos annos funcs
-  foreigns' <- Error.moduleContext modName (mergeForeignAnnos annos foreigns)
+  foreigns' <- mergeForeignAnnos annos foreigns
   syntax <- Reader.asks fst
   return (Module funcs' foreigns' types synonyms syntax)
   where
-    addDef (annos, funcs, foreigns, types, synonyms) = \case
-      F.Annotation names tipe -> do
-        let names' = map (Qualified modName) names
-        tipe' <- Error.annoContext names' (desugarScheme tipe)
-        let newAnnos = Map.fromList (zip names' $ repeat tipe') <> annos
-        return (newAnnos, funcs, foreigns, types, synonyms)
+    addDef (annos, funcs, foreigns, types, synonyms) (def, loc) =
+      case def of
+        F.Annotation names tipe -> do
+          let names' = map (Qualified modName) names
+          tipe' <- Error.annoContext names' (desugarScheme tipe)
+          let keys = zip names' (repeat loc)
+          let newAnnos = Map.fromList (zip keys $ repeat tipe') <> annos
+          return (newAnnos, funcs, foreigns, types, synonyms)
 
-      F.Func name args body@(_, loc) -> do
-        let name' = Qualified modName name
-        body' <- Error.defContext name' $
-          desugarExpr (F.Lambda args body, loc)
-        let newFuncs = (name', body') : funcs
-        return (annos, newFuncs, foreigns, types, synonyms)
+        F.Func name args body@(_, bodyLoc) -> do
+          let name' = Qualified modName name
+          body' <- Error.defContext name' $
+            desugarExpr (F.Lambda args body, bodyLoc)
+          let newFuncs = (name', body', loc) : funcs
+          return (annos, newFuncs, foreigns, types, synonyms)
 
-      F.Foreign name args js -> do
-        let name' = Qualified modName name
-        let js' = makeJavascript args js
-        let newForeigns = Map.insert name' js' foreigns
-        return (annos, funcs, newForeigns, types, synonyms)
+        F.Foreign name args js -> do
+          let name' = Qualified modName name
+          let js' = makeJavascript args js
+          let newForeigns = Map.insert (name', loc) js' foreigns
+          return (annos, funcs, newForeigns, types, synonyms)
 
-      F.Type name kind Nothing -> do
-        let name' = Qualified modName name
-        let newTypes = Map.insert name' (kind, Nothing) types
-        return (annos, funcs, foreigns, newTypes, synonyms)
+        F.Type name kind Nothing -> do
+          let name' = Qualified modName name
+          let newTypes = Map.insert name' (kind, Nothing) types
+          return (annos, funcs, foreigns, newTypes, synonyms)
 
-      F.Type name kind (Just (F.Wrapper args tipe maker getter)) -> do
-        let name' = Qualified modName name
-        tipe' <- Error.defContext name' (desugarType args tipe)
-        let maker' = Qualified modName maker
-        let getter' = fmap (Qualified modName) getter
-        let newTypes = Map.insert name' (kind, Just (Wrapper args tipe' maker' getter')) types
-        return (annos, funcs, foreigns, newTypes, synonyms)
+        F.Type name kind (Just (F.Wrapper args tipe maker getter)) -> do
+          let name' = Qualified modName name
+          tipe' <- Error.defContext name' (desugarType args tipe)
+          let maker' = Qualified modName (fst maker)
+          let getter' = fmap (Qualified modName . fst) getter
+          let newTypes = Map.insert name' (kind, Just (Wrapper args tipe' maker' getter')) types
+          return (annos, funcs, foreigns, newTypes, synonyms)
 
-      F.Synonym name args tipe -> do
-        let name' = Qualified modName name
-        tipe' <- Error.defContext name' (desugarType args tipe)
-        let newSynonyms = (name', args, tipe') : synonyms
-        return (annos, funcs, foreigns, types, newSynonyms)
+        F.Synonym name args tipe -> do
+          let name' = Qualified modName name
+          tipe' <- Error.defContext name' (desugarType args tipe)
+          let newSynonyms = (name', args, tipe', loc) : synonyms
+          return (annos, funcs, foreigns, types, newSynonyms)
 
-      F.Infix _ -> return (annos, funcs, foreigns, types, synonyms)
+        F.Infix _ -> return (annos, funcs, foreigns, types, synonyms)
 
-      F.Syntax name role -> do
-        vars <- Reader.asks snd
-        let functionRoles = [ NegateFunction, DelayFunction ]
-        let available = if role `elem` functionRoles then fst vars else snd vars
-        Error.moduleContext modName
+        F.Syntax name role -> do
+          (VarMap valueNames typeNames) <- Reader.asks snd
+          let functionRoles = [ NegateFunction, DelayFunction ]
+          let available = if role `elem` functionRoles then valueNames else typeNames
           if Qualified modName name `notElem` available
-            then Error.notDefined name
+            then Error.withLocation loc (Error.notDefined name)
             else return (annos, funcs, foreigns, types, synonyms)
 
-desugarLocalDefs :: [F.LocalDef] -> Desugar String [(Name, Maybe Scheme, Expr)]
+desugarLocalDefs :: [F.LocalDef] -> Desugar [(Name, Maybe Scheme, Expr, Location)]
 desugarLocalDefs defs = do
   (annos, funcs) <- Monad.foldM addDef (Map.empty, []) defs
-  mapM_ (existsAnno $ map fst funcs) (Map.keys annos)
+  let funcNames = map (\(n, _, _) -> n) funcs
+  mapM_ (existsAnno funcNames) (Map.keys annos)
   arrange (mergeAnnos annos funcs)
   where
-    addDef defs' = \case
-      F.LAnnotation names tipe -> do
-        tipe' <- desugarScheme tipe
-        let annos = Map.fromList $ zip names (repeat tipe')
-        return $ Bf.first (annos <>) defs'
+    addDef defs (def, loc) =
+      case def of
+        F.LAnnotation names tipe -> do
+          tipe' <- desugarScheme tipe
+          let keys = zip names (repeat loc)
+          let annos = Map.fromList $ zip keys (repeat tipe')
+          return $ Bf.first (annos <>) defs
 
-      F.LFunc name args body@(_, loc) -> do
-        body' <- desugarExpr (F.Lambda args body, loc)
-        return $ Bf.second ((name, body') :) defs'
+        F.LFunc name args body@(_, loc) -> do
+          body' <- desugarExpr (F.Lambda args body, loc)
+          return $ Bf.second ((name, body', loc) :) defs
 
-existsAnno :: (Eq a, Error.NameError a) => [a] -> a -> Desugar String ()
-existsAnno funcs name
+existsAnno :: (Eq a, Error.NameError a) => [a] -> (a, Location) -> Desugar ()
+existsAnno funcs (name, loc)
   | name `elem` funcs = return ()
-  | otherwise = Error.annotation name
+  | otherwise = Error.withLocation loc (Error.annotation name)
 
-mergeAnnos :: Ord a => Map a Scheme -> [(a, Expr)] -> [(a, Maybe Scheme, Expr)]
-mergeAnnos annos = map \(name, body) ->
-  (name, Map.lookup name annos, body)
+mergeAnnos :: Ord a => Map (a, Location) Scheme -> [(a, Expr, Location)] -> [(a, Maybe Scheme, Expr, Location)]
+mergeAnnos annos = map \(name, body, loc) ->
+  (name, Map.lookup name (Map.mapKeys fst annos), body, loc)
 
-mergeForeignAnnos :: Map Identifier Scheme -> Map Identifier String -> Desugar String (Map Identifier (Scheme, String))
-mergeForeignAnnos annos = sequence .
-  Map.mapWithKey \name js ->
-    case Map.lookup name annos of
-      Nothing -> Error.noForeignAnno name
+mergeForeignAnnos :: Map (Identifier, a) Scheme -> Map (Identifier, Location) String -> Desugar (Map Identifier (Scheme, String))
+mergeForeignAnnos annos =
+  sequence .
+  Map.mapKeys fst .
+  Map.mapWithKey \(name, loc) js ->
+    case Map.lookup name (Map.mapKeys fst annos) of
+      Nothing -> Error.withLocation loc (Error.noForeignAnno name)
       Just tipe -> return (tipe, js)
 
 class Ord a => Variable a where
@@ -326,25 +359,26 @@ freeVars (expr, _, _) =
 
     Call func arg -> freeVars func <> freeVars arg
 
-arrange :: Variable a => [(a, Maybe Scheme, Expr)] -> Desugar String [(a, Maybe Scheme, Expr)]
+arrange :: Variable a => [(a, Maybe Scheme, Expr, Location)] -> Desugar [(a, Maybe Scheme, Expr, Location)]
 arrange funcs = do
   order <- getOrder referenceMap
   let position name = Maybe.fromMaybe 0 (List.elemIndex name order)
   return $ List.sortOn (position . nameOf) funcs
   where
-    nameOf (n, _, _) = n
+    nameOf (n, _, _, _) = n
     vars = Set.filter (`elem` map nameOf funcs) . freeVars
-    referenceMap = Map.fromList $ map (\(n, _, x) -> (n, vars x)) funcs
+    referenceMap = Map.fromList $ map (\(n, _, x, loc) -> (n, (vars x, loc))) funcs
 
-getOrder :: Variable a => Map a (Set a) -> Desugar String [a]
+getOrder :: Variable a => Map a (Set a, Location) -> Desugar [a]
 getOrder refs
   | Map.null refs = return []
-  | Set.null roots = Error.mutualRecursion
+  | Set.null roots = Error.withLocation loc Error.mutualRecursion
   | otherwise = (Set.toList roots ++) <$> getOrder rest
   where
-    isRoot n rs = Set.null rs || Set.toList rs == [n]
+    loc = snd $ snd $ head (Map.toList refs)
+    isRoot n (rs, _) = Set.null rs || Set.toList rs == [n]
     roots = Map.keysSet (Map.filterWithKey isRoot refs)
-    rest = (\\ roots) <$> foldr Map.delete refs roots
+    rest = Bf.first (\\ roots) <$> foldr Map.delete refs roots
 
 freeCons :: Type -> Set Identifier
 freeCons = \case
@@ -353,28 +387,29 @@ freeCons = \case
   TLabel _ -> Set.empty
   TCall func arg -> freeCons func <> freeCons arg
 
-arrangeSynonyms :: [(Identifier, [Name], Type)] -> Desugar String [(Identifier, [Name], Type)]
+arrangeSynonyms :: [(Identifier, [Name], Type, Location)] -> Desugar [(Identifier, [Name], Type, Location)]
 arrangeSynonyms syns = do
   order <- getSynonymOrder referenceMap
   let position name = Maybe.fromMaybe 0 (List.elemIndex name order)
   return $ List.sortOn (position . nameOf) syns
   where
-    nameOf (n, _, _) = n
+    nameOf (n, _, _, _) = n
     cons = Set.filter (`elem` map nameOf syns) . freeCons
-    removeArgs = map (\(n, _, t) -> (n, t))
+    removeArgs = map (\(n, _, t, loc) -> (n, (t, loc)))
     referenceMap =
-      map (Bf.second cons) (removeArgs syns)
+      map (Bf.second $ Bf.first cons) (removeArgs syns)
       & Map.fromList
 
-getSynonymOrder :: Map Identifier (Set Identifier) -> Desugar String [Identifier]
+getSynonymOrder :: Map Identifier (Set Identifier, Location) -> Desugar [Identifier]
 getSynonymOrder refs
   | Map.null refs = return []
-  | Set.null roots = Error.synonymRecursion
+  | Set.null roots = Error.withLocation loc Error.synonymRecursion
   | otherwise = (Set.toList roots ++) <$> getOrder rest
   where
-    isRoot n rs = Set.null rs
+    loc = snd $ snd $ head (Map.toList refs)
+    isRoot n (rs, _) = Set.null rs
     roots = Map.keysSet (Map.filterWithKey isRoot refs)
-    rest = (\\ roots) <$> foldr Map.delete refs roots
+    rest = Bf.first (\\ roots) <$> foldr Map.delete refs roots
 
 variableNames :: F.Expr -> Set Name
 variableNames (expr, _) =
@@ -393,11 +428,12 @@ variableNames (expr, _) =
     F.Lambda _ x -> variableNames x
     F.Call x y -> variableNames x <> variableNames y
   where
-    variablesDef = \case
-       F.LAnnotation _ _ -> Set.empty
-       F.LFunc _ _ x -> variableNames x
+    variablesDef (def, _) =
+       case def of
+         F.LAnnotation _ _ -> Set.empty
+         F.LFunc _ _ x -> variableNames x
 
-desugarExpr :: F.Expr -> Desugar String Expr
+desugarExpr :: F.Expr -> Desugar Expr
 desugarExpr (expr, loc) =
   case expr of
     F.Int x -> withId (Int x)
@@ -412,11 +448,11 @@ desugarExpr (expr, loc) =
       (syntax, vars) <- Reader.ask
       value' <- desugarExpr value
       case Map.lookup NegateFunction syntax of
-        Nothing -> Error.negateFunction
-        Just name | name `elem` fst vars -> do
+        Nothing -> Error.withLocation loc Error.negateFunction
+        Just name | name `elem` Lens.view valueSubs vars -> do
           id1 <- makeId
           withId $ Call (Identifier name, loc, id1) value'
-        Just name -> Error.notDefined name
+        Just name -> Error.withLocation loc (Error.notDefined name)
 
     F.Operator name Nothing Nothing ->
       ifDefined (Unqualified name) id
@@ -451,11 +487,11 @@ desugarExpr (expr, loc) =
       Reader.local (Bf.second (local <>)) do
         defs' <- desugarLocalDefs defs
         body' <- desugarExpr body
-        let defIn (n, a, b) x = withId (DefIn n a b x)
+        let defIn (n, a, b, _) x = withId (DefIn n a b x)
         Fold.foldrM defIn body' defs'
 
     F.Lambda args body -> do
-      local <- Monad.foldM insertLocalValue emptyVars args
+      local <- Monad.foldM insertLocalValue emptyVars $ zip args (repeat loc)
       Reader.local (Bf.second (local <>)) do
         body' <- desugarExpr body
         let lambda n x = withId (Lambda n x)
@@ -477,70 +513,69 @@ desugarExpr (expr, loc) =
       varRef = Identifier (Unqualified safeVar)
 
       ifDefined name f = do
-        vars <- Reader.asks snd :: Desugar String VarMap
-        case Map.lookup name (fst vars) of
-          Nothing -> Error.notDefined name
+        vars <- Reader.asks snd :: Desugar VarMap
+        case Map.lookup name (Lens.view valueSubs vars) of
+          Nothing -> Error.withLocation loc (Error.notDefined name)
           Just sub -> withId $ f (Identifier sub)
 
-desugarScheme :: F.Scheme -> Desugar String Scheme
+desugarScheme :: F.Scheme -> Desugar Scheme
 desugarScheme (F.Forall as tipe) =
   Forall as <$> desugarType as tipe
 
-desugarType :: [Name] -> F.Type -> Desugar String Type
-desugarType as = \case
-  F.TCon (Unqualified name) | name `elem` as ->
-    return $ TVar (name, Annotated)
+desugarType :: [Name] -> F.Type -> Desugar Type
+desugarType as (tipe, loc) =
+  case tipe of
+    F.TCon (Unqualified name) | name `elem` as ->
+      return $ TVar (name, Annotated)
 
-  F.TCon name -> ifDefined name id
+    F.TCon name -> ifDefined name id
 
-  F.TOperator name x y -> do
-    x' <- desugarType as x
-    y' <- desugarType as y
-    ifDefined (Unqualified name)
-      \sub -> TCall (TCall sub x') y'
+    F.TOperator name x y -> do
+      x' <- desugarType as x
+      y' <- desugarType as y
+      ifDefined (Unqualified name)
+        \sub -> TCall (TCall sub x') y'
 
-  F.TLabel x -> return (TLabel x)
+    F.TLabel x -> return (TLabel x)
 
-  F.TRecord row -> do
-    (syntax, vars) <- Reader.ask
-    row' <- desugarType as row
-    case Map.lookup CurlyBrackets syntax of
-      Nothing -> Error.curlyBrackets
-      Just name | name `elem` snd vars -> do
-        return $ TCall (TCon name) row'
-      Just name -> Error.notDefined name
+    F.TRecord row -> do
+      (syntax, vars) <- Reader.ask
+      row' <- desugarType as row
+      case Map.lookup CurlyBrackets syntax of
+        Nothing -> Error.withLocation loc Error.curlyBrackets
+        Just name | name `elem` Lens.view typeSubs vars -> do
+          return $ TCall (TCon name) row'
+        Just name -> Error.withLocation loc (Error.notDefined name)
 
-  F.TVariant row -> do
-    (syntax, vars) <- Reader.ask
-    row' <- desugarType as row
-    case Map.lookup SquareBrackets syntax of
-      Nothing -> Error.squareBrackets
-      Just name | name `elem` snd vars -> do
-        return $ TCall (TCon name) row'
-      Just name -> Error.notDefined name
+    F.TVariant row -> do
+      (syntax, vars) <- Reader.ask
+      row' <- desugarType as row
+      case Map.lookup SquareBrackets syntax of
+        Nothing -> Error.withLocation loc Error.squareBrackets
+        Just name | name `elem` Lens.view typeSubs vars -> do
+          return $ TCall (TCon name) row'
+        Just name -> Error.withLocation loc (Error.notDefined name)
 
-  F.TCall func arg -> TCall
-    <$> desugarType as func
-    <*> desugarType as arg
+    F.TCall func arg -> TCall
+      <$> desugarType as func
+      <*> desugarType as arg
 
   where
     ifDefined name f = do
-      vars <- Reader.asks snd :: Desugar String VarMap
-      case Map.lookup name (snd vars) of
-        Nothing -> Error.notDefined name
+      vars <- Reader.ask
+      case Map.lookup name (Lens.view typeSubs vars) of
+        Nothing -> Error.withLocation loc (Error.notDefined name)
         Just sub -> return $ f (TCon sub)
 
-desugarModule :: Map ModName Interface -> ModName -> F.Module -> Desugar Error.Context Module
+desugarModule :: Map ModName Interface -> ModName -> F.Module -> Desugar Module
 desugarModule interfaces modName m = do
-  exports <- Error.moduleContext modName (getExports m)
-  vars <- Error.moduleContext modName $
-    Monad.foldM (insertImport interfaces) emptyVars (F.getImports m)
-  vars' <- Error.moduleContext modName $
-    Monad.foldM (insertTopLevelDef modName) vars (F.getDefs m)
+  exports <- getExports m
+  vars <- Monad.foldM (insertImport interfaces) emptyVars (F.getImports m)
+  vars' <- Monad.foldM (insertTopLevelDef modName) vars (F.getDefs m)
   Reader.local (Bf.second $ const vars') $
     desugarDefs modName (F.getDefs m)
 
-desugarModules :: Map ModName F.Module -> Either Error.Context Module
+desugarModules :: Map ModName F.Module -> Either Error.Msg Module
 desugarModules modules =
   State.evalState (Reader.runReaderT (Except.runExceptT desugar) (Map.empty, emptyVars)) 0
   where
@@ -552,29 +587,28 @@ desugarModules modules =
       modules' <- Reader.local (Bf.first $ const syntax) $
         sequence $ Map.mapWithKey (desugarModule interfaces) modules
       let Module funcs foreigns types synonyms syntax = Fold.fold modules'
-      funcs' <- Error.noContext (arrange funcs)
-      synonyms' <- Error.noContext (arrangeSynonyms synonyms)
+      funcs' <- arrange funcs
+      synonyms' <- arrangeSynonyms synonyms
       return (Module funcs' foreigns types synonyms' syntax)
 
-hasMain :: Map ModName Interface -> Desugar Error.Context ()
+hasMain :: Map ModName Interface -> Desugar ()
 hasMain interfaces =
-  Error.noContext
   case Map.lookup "Main" interfaces of
-    Nothing -> Error.noModule "Main"
+    Nothing -> Error.noMainModule
     Just (funcs, _) | "main" `elem` funcs -> return ()
-    Just _ -> Error.noMain
+    Just _ -> Error.noMainFunction
 
-noRepeatedInfix :: [F.Def] -> Desugar Error.Context ()
+noRepeatedInfix :: [F.Def] -> Desugar ()
 noRepeatedInfix =
-  Error.noContext . Monad.foldM_ addInfix []
+  Monad.foldM_ addInfix []
   where
     addInfix ops = \case
       F.Infix name
         | name `elem` ops -> Error.multipleInfix name
         | otherwise -> return (name : ops)
-      _ -> return ops :: Desugar String [Name]
+      _ -> return ops :: Desugar [Name]
 
-getSyntaxMap :: Map ModName [F.Def] -> Desugar Error.Context (Map Role Identifier)
+getSyntaxMap :: Map ModName [F.Def] -> Desugar (Map Role Identifier)
 getSyntaxMap modules = do
   (roles, syntax) <- Monad.foldM addSyntax ([], Map.empty) defs
   return syntax
@@ -585,7 +619,6 @@ getSyntaxMap modules = do
     addSyntax (roles, syntax) = \case
       (modName, F.Syntax name role) ->
         let name' = Qualified modName name in
-        Error.moduleContext modName
         if role `elem` roles
           then Error.conflictingSyntax name'
           else return (role : roles, Map.insert role name' syntax)

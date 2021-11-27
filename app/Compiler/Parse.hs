@@ -220,17 +220,19 @@ parseExpr = do
 
 parseTRecord :: Parser Type
 parseTRecord = do
+  loc <- getLocation
   row <- braces parseType
-  return (TRecord row)
+  return (TRecord row, loc)
 
 parseTVariant :: Parser Type
 parseTVariant = do
+  loc <- getLocation
   row <- brackets parseType
-  return (TVariant row)
+  return (TVariant row, loc)
 
 parseTFactor :: Parser Type
 parseTFactor =
-  fmap fst (parseIdentifier TLabel TCon) <|>
+  parseIdentifier TLabel TCon <|>
   parseTRecord <|>
   parseTVariant <|>
   parens parseType
@@ -243,13 +245,13 @@ parseTCallFactor = do
     parseCall f = do
       loc <- getLocation
       t <- parseTFactor
-      let call = TCall f t
+      let call = (TCall f t, loc)
       parseCall call <|> return call
 
 parseType :: Parser Type
 parseType = do
   loc <- getLocation
-  ops <- operatorParsers \n x y -> TOperator n x y
+  ops <- operatorParsers \n x y -> (TOperator n x y, loc)
   Ex.buildExpressionParser ops parseTCallFactor
 
 parseAny :: Parser Scheme
@@ -300,13 +302,14 @@ parseFunc func = do
   body <- parseExpr
   return (func name args body)
 
-parseTypeDef :: Parser Def
+parseTypeDef :: Parser SimpleDef
 parseTypeDef = do
   reserved "type"
   name <- nameOrOperator
   parseBase name <|> parseSynonym name
   where
     parseBase name = do
+      loc <- getLocation
       reservedOp "::"
       kind <- parseKind
       wrapper <- fmap Just (parseWrapper name) <|> return Nothing
@@ -326,15 +329,18 @@ parseWrapper name = do
   reservedOp "="
   body <- parseType
   reserved "with"
+  loc <- getLocation
   wrapper <- identifierLower
   unwrapper <- fmap Just parseUnwrapper <|> return Nothing
-  return (Wrapper args body wrapper unwrapper)
+  return $ Wrapper args body (wrapper, loc) unwrapper
   where
     parseUnwrapper = do
+      loc <- getLocation
       reservedOp ","
-      identifierLower
+      name <- identifierLower
+      return (name, loc)
 
-parseForeign :: Parser Def
+parseForeign :: Parser SimpleDef
 parseForeign = do
   reserved "foreign"
   name <- nameOrOperator
@@ -343,7 +349,7 @@ parseForeign = do
   body <- stringLiteral
   return (Foreign name args body)
 
-parseInfix :: Parser Def
+parseInfix :: Parser SimpleDef
 parseInfix = do
   reserved "infix"
   name <- operator
@@ -351,7 +357,7 @@ parseInfix = do
   _ <- natural
   return (Infix name)
 
-parseSyntax :: Parser Def
+parseSyntax :: Parser SimpleDef
 parseSyntax = do
   reserved "syntax"
   name <- nameOrOperator
@@ -374,23 +380,32 @@ parseSyntax = do
       when "row-constructor" RowConstructor
 
 parseLocalDef :: Parser LocalDef
-parseLocalDef =
-  parseAnnotation LAnnotation <|>
-  parseFunc LFunc
+parseLocalDef = do
+  loc <- getLocation
+  def <-
+    parseAnnotation LAnnotation <|>
+    parseFunc LFunc
+  return (def, loc)
 
 parseDef :: Parser Def
-parseDef =
-  parseAnnotation Annotation <|>
-  parseFunc Func <|>
-  parseTypeDef <|>
-  parseForeign <|>
-  parseInfix <|>
-  parseSyntax
+parseDef = do
+  loc <- getLocation
+  def <-
+    parseAnnotation Annotation <|>
+    parseFunc Func <|>
+    parseTypeDef <|>
+    parseForeign <|>
+    parseInfix <|>
+    parseSyntax
+  return (def, loc)
 
 parsePort :: Parser Port
-parsePort =
-  parseTypePort <|>
-  parseValuePort
+parsePort = do
+  loc <- getLocation
+  port <-
+    parseTypePort <|>
+    parseValuePort
+  return (port, loc)
   where
     parseTypePort =
       reserved "type" >>
@@ -401,12 +416,15 @@ parsePort =
 
 parseImport :: Parser Import
 parseImport = do
+  loc <- getLocation
   reserved "import"
   modName <- identifierUpper
-  parseOpen modName <|>
+  settings <-
+    parseOpen modName <|>
     parseAlias modName <|>
     parseExposing modName Nothing <|>
     return (Import modName Nothing Nothing)
+  return (settings, loc)
   where
     parseOpen modName = do
       reserved "open"

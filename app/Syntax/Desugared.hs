@@ -48,10 +48,10 @@ data Scheme = Forall [Name] Type
 data Wrapper = Wrapper [Name] Type Identifier (Maybe Identifier)
 
 data Module = Module
-  { getFuncs :: [(Identifier, Maybe Scheme, Expr)]
+  { getFuncs :: [(Identifier, Maybe Scheme, Expr, Location)]
   , getForeigns :: Map Identifier (Scheme, String)
   , getTypes :: Map Identifier (Kind, Maybe Wrapper)
-  , getSynonyms :: [(Identifier, [Name], Type)]
+  , getSynonyms :: [(Identifier, [Name], Type, Location)]
   , getSyntax :: Map Role Identifier
   }
 
