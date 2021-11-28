@@ -157,10 +157,13 @@ genWrapper (Wrapper _ _ mk gt) =
 lazifyExpr :: Maybe Identifier -> [Int] -> Expr -> Expr
 lazifyExpr maybeDelay nums (expr, loc, num)
   | num `elem` nums, Just delay <- maybeDelay =
-      (Call (Identifier delay, loc, 0) (lazify expr, loc, 0), loc, 0)
+      ( Call (Identifier delay, loc, 0)
+          (Lambda "_" (lazify expr, loc, 0), loc, 0)
+      , loc, 0)
   | otherwise = (lazify expr, loc, 0)
   where
     recurse = lazifyExpr maybeDelay nums
+
     lazify = \case
       DefIn n t x1 x2 -> DefIn n t (recurse x1) (recurse x2)
       Lambda n x -> Lambda n (recurse x)
