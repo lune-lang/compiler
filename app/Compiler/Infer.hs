@@ -369,7 +369,7 @@ checkFuncs = \case
         s <- getSubst t
         return (s, t)
     in do
-    (s, t) <- getType
+    (s, t) <- Error.defContext n getType
     Reader.local (Lens.over typeEnv $ apply s) $ do
       sc <- generalise (apply s t)
       State.modify $ Lens.over constraints (const [])
