@@ -151,8 +151,10 @@ labelType loc n = do
   t <- specialType LabelType loc Error.labelType
   return $ TCall t (TLabel n)
 
-lazyType :: Infer (Maybe Identifier)
-lazyType = Reader.asks (Map.lookup LazyType . Lens.view syntax)
+lazyType :: Infer (Maybe (Type -> Type))
+lazyType = do
+  n <- Reader.asks (Map.lookup LazyType . Lens.view syntax)
+  return $ fmap (TCall . TCon) n
 
 rowCons :: Infer (Maybe Identifier)
 rowCons = Reader.asks (Map.lookup RowConstructor . Lens.view syntax)
@@ -206,7 +208,7 @@ inferType (expr, loc, _) =
           maybeLazy <- lazyType
           case maybeLazy of
             Nothing -> unify loc1 t anno
-            Just lazy -> unifyDelay loc1 (TCall (TCon lazy) t, num) t anno
+            Just lazy -> unifyDelay loc1 (lazy t, num) t anno
 
         getSubst t =
           case maybeAnno of
@@ -235,20 +237,25 @@ inferType (expr, loc, _) =
       t <- extendEnv (Unqualified n) (Forall [] var) (inferType x)
       functionType loc var t
 
-    Call x1@(_, loc1, _) x2@(_, loc2, _) -> do
+    Call x1@(_, loc1, _) x2@(_, loc2, num) -> do
       t1 <- inferType x1
       t2 <- inferType x2
       var <- freshVar Inferred
-      functionType loc1 t2 var >>= unify loc2 t1
+      strict <- functionType loc1 t2 var
+      maybeLazy <- lazyType
+      case maybeLazy of
+        Nothing -> unify loc2 strict t1
+        Just lazy -> do
+          nonstrict <- functionType loc1 (lazy t2) var
+          unifyDelay loc2 (nonstrict, num) strict t1
       return var
 
 unifies :: Maybe Identifier -> Location -> Type -> Type -> Infer Subst
 unifies cons loc = curry \case
   (t1, t2) | t1 == t2 -> return nullSubst
 
-  (TVar (n, _), t) -> bind loc n t
-  (t, TVar (n, Inferred)) -> bind loc n t
-  (t, TVar (n, Annotated)) -> Error.withLocation loc Error.generalAnno
+  (TVar n, t) -> bind loc n t
+  (t, TVar n) -> bind loc n t
 
   (TCall3 (TCon n) l v1 r1, t2) | Just cons' <- cons, n == cons' -> do
       (v2, r2) <- rowGet cons' loc l t2
@@ -280,10 +287,17 @@ rowGet cons loc label = \case
 
   t -> Error.withLocation loc (Error.noLabel label t)
 
-bind :: Location -> Name -> Type -> Infer Subst
-bind loc n t
-  | Set.member n (freeVars t) = Error.withLocation loc Error.occursCheck
+bind :: Location -> (Name, Origin) -> Type -> Infer Subst
+bind loc (n, origin) t
+  | origin == Annotated, not variable =
+      Error.withLocation loc Error.generalAnno
+  | Set.member n (freeVars t) =
+      Error.withLocation loc Error.occursCheck
   | otherwise = return (Map.singleton n t)
+  where
+    variable = case t of
+      TVar _ -> True
+      _ -> False
 
 solver :: Subst -> [Constraint] -> Infer Subst
 solver s = \case
@@ -350,7 +364,7 @@ checkFuncs = \case
         maybeLazy <- lazyType
         case maybeLazy of
           Nothing -> unify loc t anno
-          Just lazy -> unifyDelay loc (TCall (TCon lazy) t, num) t anno
+          Just lazy -> unifyDelay loc (lazy t, num) t anno
 
       getSubst t =
         case maybeAnno of
