@@ -165,6 +165,7 @@ lazifyExpr maybeDelay nums (expr, loc, num)
       DefIn n t x1 x2 -> DefIn n t (recurse x1) (recurse x2)
       Lambda n x -> Lambda n (recurse x)
       Call x1 x2 -> Call (recurse x1) (recurse x2)
+      x -> x
 
 genModule :: [Int] -> String -> Module -> String
 genModule nums js m = concat
