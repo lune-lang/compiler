@@ -231,7 +231,7 @@ noLabel t1 t2 = Except.throwError $ concat
 
 withLocation :: (Functor m) => Location -> ExceptT String m a -> ExceptT Msg m a
 withLocation (file, line, column) = Except.withExceptT
-  \e -> Msg $ concat [ show file, " (", show line, ", ", show column, "):\n", e ]
+  \e -> Msg $ concat [ show file, " (line ", show line, ", column ", show column, "):\n", e ]
 
 defContext :: (Functor m) => Identifier -> ExceptT Msg m a -> ExceptT Msg m a
 defContext n = Except.withExceptT

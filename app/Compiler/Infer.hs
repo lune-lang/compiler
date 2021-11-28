@@ -19,10 +19,11 @@ import Data.Set (Set, (\\))
 
 import qualified Control.Monad.Except as Except
 import qualified Control.Monad.Reader as Reader
+import qualified Control.Monad.Writer as Writer
 import qualified Control.Monad.State as State
+import qualified Control.Monad.RWS as RWS
 import Control.Monad.Except (ExceptT)
-import Control.Monad.Reader (ReaderT)
-import Control.Monad.State (State)
+import Control.Monad.RWS (RWS)
 
 import qualified Control.Lens as Lens
 
@@ -99,7 +100,7 @@ instance Substitutable a => Substitutable (Map k a) where
   apply s = fmap (apply s)
   freeVars = foldMap freeVars
 
-type Constraint = (Location, Type, Type)
+type Constraint = (Location, Maybe Int, Type, Type)
 
 data Stream a = Cons a (Stream a)
 
@@ -110,7 +111,7 @@ data InferState = InferState
 
 Lens.makeLenses ''InferState
 
-type InferWith e = ExceptT e (ReaderT Env (State InferState))
+type InferWith e = ExceptT e (RWS Env [Int] InferState)
 type Infer = InferWith Error.Msg
 
 extendEnv :: Identifier -> Scheme -> Infer a -> Infer a
@@ -150,6 +151,11 @@ labelType loc n = do
   t <- specialType LabelType loc Error.labelType
   return $ TCall t (TLabel n)
 
+lazyType :: Type -> Infer Type
+lazyType t1 = do
+  t <- specialType LazyType ("", 0, 0) (Except.throwError "")
+  return (TCall t t1)
+
 rowCons :: Infer (Maybe Identifier)
 rowCons = Reader.asks (Map.lookup RowConstructor . Lens.view syntax)
 
@@ -166,7 +172,12 @@ generalise t = do
   return $ Forall (Set.toList vs) t
 
 unify :: Location -> Type -> Type -> Infer ()
-unify loc t1 t2 = State.modify $ Lens.over constraints ((loc, t1, t2) :)
+unify loc t1 t2 = State.modify $
+  Lens.over constraints ((loc, Nothing, t1, t2) :)
+
+unifyDelay :: Location -> Int -> Type -> Type -> Infer ()
+unifyDelay loc num t1 t2 = State.modify $
+  Lens.over constraints ((loc, Just num, t1, t2) :)
 
 freshVar :: Origin -> Infer Type
 freshVar origin = do
@@ -191,7 +202,7 @@ inferType (expr, loc, _) =
       maybe (Error.withLocation loc $ Error.notDefined n)
         (instantiate Inferred) (Map.lookup n env)
 
-    DefIn n maybeAnno x1@(_, loc1, _) x2 -> do
+    DefIn n maybeAnno x1@(_, loc1, num) x2 -> do
       (s, t) <- do
         var <- freshVar Inferred
         t <- extendEnv (Unqualified n) (Forall [] var) (inferType x1)
@@ -202,7 +213,7 @@ inferType (expr, loc, _) =
             return (s, t)
           Just anno@(D.Forall _ (_, annoLoc)) -> do
             anno' <- instantiate Annotated . convertScheme =<< unaliasScheme anno
-            unify loc1 t anno'
+            unifyDelay loc1 num t anno'
             s <- solve
             equivalent annoLoc anno' (apply s anno')
             return (s, t)
@@ -243,6 +254,14 @@ unifies cons loc = curry \case
 
   (t1, t2) -> Error.withLocation loc (Error.unification t1 t2)
 
+unifiesDelay :: Maybe Identifier -> Location -> Int -> Type -> Type -> Infer Subst
+unifiesDelay cons loc num t1 t2 =
+  unifies cons loc t1 t2 `Except.catchError` \e -> do
+    let withE = Except.withExceptT (const e)
+    lazy <- withE (lazyType t1)
+    Writer.tell [num]
+    withE (unifies cons loc lazy t2)
+
 rowGet :: Identifier -> Location -> Type -> Type -> Infer (Type, Type)
 rowGet cons loc label = \case
   (TCall3 (TCon n) l v r) | n == cons ->
@@ -261,9 +280,11 @@ bind loc n t
 solver :: Subst -> [Constraint] -> Infer Subst
 solver s = \case
   [] -> return s
-  (loc, t1, t2) : cs -> do
+  (loc, maybeNum, t1, t2) : cs -> do
     cons <- rowCons
-    s1 <- unifies cons loc t1 t2
+    s1 <- case maybeNum of
+      Nothing -> unifies cons loc t1 t2
+      Just num -> unifiesDelay cons loc num t1 t2
     let sub = Bf.bimap (apply s1) (apply s1)
     solver (compose s1 s) (map sub cs)
 
@@ -450,10 +471,12 @@ wrapperEnv n (_, w) =
               Just gt -> Map.insert gt getterType makerEnv
         return (Env typeEnv Map.empty Map.empty Map.empty)
 
-checkModule :: Module -> Either Error.Msg ()
+checkModule :: Module -> Either Error.Msg [Int]
 checkModule (Module funcs foreigns types syns syntax) =
-  State.evalState (Reader.runReaderT (Except.runExceptT check) env) state
+  nums <$ result
   where
+    (result, _, nums) = RWS.runRWS (Except.runExceptT check) env state
+
     state = InferState [] (foldr Cons undefined fresh)
     env = Env Map.empty (fmap fst types) Map.empty syntax
 

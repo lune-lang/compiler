@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE BlockArguments #-}
 
 module Compiler.Generate (genModule) where
 
@@ -153,8 +154,20 @@ genWrapper (Wrapper _ _ mk gt) =
       , " = function(x) { return x; }; "
       ]
 
-genModule :: String -> Module -> String
-genModule js m = concat
+lazifyExpr :: Maybe Identifier -> [Int] -> Expr -> Expr
+lazifyExpr maybeDelay nums (expr, loc, num)
+  | num `elem` nums, Just delay <- maybeDelay =
+      (Call (Identifier delay, loc, 0) (lazify expr, loc, 0), loc, 0)
+  | otherwise = (lazify expr, loc, 0)
+  where
+    recurse = lazifyExpr maybeDelay nums
+    lazify = \case
+      DefIn n t x1 x2 -> DefIn n t (recurse x1) (recurse x2)
+      Lambda n x -> Lambda n (recurse x)
+      Call x1 x2 -> Call (recurse x1) (recurse x2)
+
+genModule :: [Int] -> String -> Module -> String
+genModule nums js m = concat
   [ concatMap genModuleDef (modNames m)
   , js
   , wrapperDefs
@@ -163,6 +176,8 @@ genModule js m = concat
   , genIdentifier (Qualified "Main" "main"), "();"
   ]
   where
+    delay = Map.lookup DelayFunction (getSyntax m)
+
     foreignDefs =
       getForeigns m
       & fmap snd
@@ -171,7 +186,7 @@ genModule js m = concat
 
     funcDefs =
       getFuncs m
-      & map (\(n, _, x, _) -> (n, x))
+      & map (\(n, _, x, _) -> (n, lazifyExpr delay nums x))
       & concatMap (uncurry genFunc)
 
     wrapperDefs =
