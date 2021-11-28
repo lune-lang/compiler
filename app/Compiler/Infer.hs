@@ -100,7 +100,7 @@ instance Substitutable a => Substitutable (Map k a) where
   apply s = fmap (apply s)
   freeVars = foldMap freeVars
 
-type Constraint = (Location, Maybe Int, Type, Type)
+type Constraint = (Location, Maybe (Type, Int), Type, Type)
 
 data Stream a = Cons a (Stream a)
 
@@ -151,10 +151,8 @@ labelType loc n = do
   t <- specialType LabelType loc Error.labelType
   return $ TCall t (TLabel n)
 
-lazyType :: Type -> Infer Type
-lazyType t1 = do
-  t <- specialType LazyType ("", 0, 0) (Except.throwError "")
-  return (TCall t t1)
+lazyType :: Infer (Maybe Identifier)
+lazyType = Reader.asks (Map.lookup LazyType . Lens.view syntax)
 
 rowCons :: Infer (Maybe Identifier)
 rowCons = Reader.asks (Map.lookup RowConstructor . Lens.view syntax)
@@ -175,9 +173,9 @@ unify :: Location -> Type -> Type -> Infer ()
 unify loc t1 t2 = State.modify $
   Lens.over constraints ((loc, Nothing, t1, t2) :)
 
-unifyDelay :: Location -> Int -> Type -> Type -> Infer ()
-unifyDelay loc num t1 t2 = State.modify $
-  Lens.over constraints ((loc, Just num, t1, t2) :)
+unifyDelay :: Location -> (Type, Int) -> Type -> Type -> Infer ()
+unifyDelay loc alt t1 t2 = State.modify $
+  Lens.over constraints ((loc, Just alt, t1, t2) :)
 
 freshVar :: Origin -> Infer Type
 freshVar origin = do
@@ -202,21 +200,32 @@ inferType (expr, loc, _) =
       maybe (Error.withLocation loc $ Error.notDefined n)
         (instantiate Inferred) (Map.lookup n env)
 
-    DefIn n maybeAnno x1@(_, loc1, num) x2 -> do
-      (s, t) <- do
-        var <- freshVar Inferred
-        t <- extendEnv (Unqualified n) (Forall [] var) (inferType x1)
-        unify loc1 t var
-        case maybeAnno of
-          Nothing -> do
-            s <- solve
-            return (s, t)
-          Just anno@(D.Forall _ (_, annoLoc)) -> do
-            anno' <- instantiate Annotated . convertScheme =<< unaliasScheme anno
-            unifyDelay loc1 num t anno'
-            s <- solve
-            equivalent annoLoc anno' (apply s anno')
-            return (s, t)
+    DefIn n maybeAnno x1@(_, loc1, num) x2 ->
+      let
+        unifyAnno t anno = do
+          maybeLazy <- lazyType
+          case maybeLazy of
+            Nothing -> unify loc1 t anno
+            Just lazy -> unifyDelay loc1 (TCall (TCon lazy) t, num) t anno
+
+        getSubst t =
+          case maybeAnno of
+            Nothing -> solve
+            Just anno@(D.Forall _ (_, annoLoc)) -> do
+              anno' <- instantiate Annotated . convertScheme =<< unaliasScheme anno
+              unifyAnno t anno'
+              s <- solve
+              equivalent annoLoc anno' (apply s anno')
+              return s
+
+        getType = do
+          var <- freshVar Inferred
+          t <- extendEnv (Unqualified n) (Forall [] var) (inferType x1)
+          unify loc1 t var
+          s <- getSubst t
+          return (s, t)
+      in do
+      (s, t) <- getType
       Reader.local (Lens.over typeEnv $ apply s) do
         sc <- generalise (apply s t)
         extendEnv (Unqualified n) sc (inferType x2)
@@ -254,13 +263,12 @@ unifies cons loc = curry \case
 
   (t1, t2) -> Error.withLocation loc (Error.unification t1 t2)
 
-unifiesDelay :: Maybe Identifier -> Location -> Int -> Type -> Type -> Infer Subst
-unifiesDelay cons loc num t1 t2 =
+unifiesDelay :: Maybe Identifier -> Location -> (Type, Int) -> Type -> Type -> Infer Subst
+unifiesDelay cons loc (alt, num) t1 t2 =
   unifies cons loc t1 t2 `Except.catchError` \e -> do
     let withE = Except.withExceptT (const e)
-    lazy <- withE (lazyType t1)
     Writer.tell [num]
-    withE (unifies cons loc lazy t2)
+    withE (unifies cons loc alt t2)
 
 rowGet :: Identifier -> Location -> Type -> Type -> Infer (Type, Type)
 rowGet cons loc label = \case
@@ -280,11 +288,11 @@ bind loc n t
 solver :: Subst -> [Constraint] -> Infer Subst
 solver s = \case
   [] -> return s
-  (loc, maybeNum, t1, t2) : cs -> do
+  (loc, maybeAlt, t1, t2) : cs -> do
     cons <- rowCons
-    s1 <- case maybeNum of
+    s1 <- case maybeAlt of
       Nothing -> unifies cons loc t1 t2
-      Just num -> unifiesDelay cons loc num t1 t2
+      Just alt -> unifiesDelay cons loc alt t1 t2
     let sub = Bf.bimap (apply s1) (apply s1)
     solver (compose s1 s) (map sub cs)
 
@@ -336,21 +344,32 @@ checkKind k = \case
 checkFuncs :: [(Identifier, Maybe D.Scheme, Expr, Location)] -> Infer ()
 checkFuncs = \case
   [] -> return ()
-  (n, maybeAnno, x@(_, loc, num), _) : fs -> do
-    (s, t) <- Error.defContext n do
-      var <- freshVar Inferred
-      t <- extendEnv n (Forall [] var) (inferType x)
-      unify loc t var
-      case maybeAnno of
-        Nothing -> do
-          s <- solve
-          return (s, t)
-        Just anno@(D.Forall _ (_, annoLoc)) -> do
-          anno' <- instantiate Annotated . convertScheme =<< unaliasScheme anno
-          unifyDelay loc num t anno'
-          s <- solve
-          equivalent annoLoc anno' (apply s anno')
-          return (s, t)
+  (n, maybeAnno, x@(_, loc, num), _) : fs ->
+    let
+      unifyAnno t anno = do
+        maybeLazy <- lazyType
+        case maybeLazy of
+          Nothing -> unify loc t anno
+          Just lazy -> unifyDelay loc (TCall (TCon lazy) t, num) t anno
+
+      getSubst t =
+        case maybeAnno of
+          Nothing -> solve
+          Just anno@(D.Forall _ (_, annoLoc)) -> do
+            anno' <- instantiate Annotated . convertScheme =<< unaliasScheme anno
+            unifyAnno t anno'
+            s <- solve
+            equivalent annoLoc anno' (apply s anno')
+            return s
+
+      getType = do
+        var <- freshVar Inferred
+        t <- extendEnv n (Forall [] var) (inferType x)
+        unify loc t var
+        s <- getSubst t
+        return (s, t)
+    in do
+    (s, t) <- getType
     Reader.local (Lens.over typeEnv $ apply s) $ do
       sc <- generalise (apply s t)
       State.modify $ Lens.over constraints (const [])
