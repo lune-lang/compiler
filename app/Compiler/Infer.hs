@@ -336,7 +336,7 @@ checkKind k = \case
 checkFuncs :: [(Identifier, Maybe D.Scheme, Expr, Location)] -> Infer ()
 checkFuncs = \case
   [] -> return ()
-  (n, maybeAnno, x@(_, loc, _), _) : fs -> do
+  (n, maybeAnno, x@(_, loc, num), _) : fs -> do
     (s, t) <- Error.defContext n do
       var <- freshVar Inferred
       t <- extendEnv n (Forall [] var) (inferType x)
@@ -347,7 +347,7 @@ checkFuncs = \case
           return (s, t)
         Just anno@(D.Forall _ (_, annoLoc)) -> do
           anno' <- instantiate Annotated . convertScheme =<< unaliasScheme anno
-          unify loc t anno'
+          unifyDelay loc num t anno'
           s <- solve
           equivalent annoLoc anno' (apply s anno')
           return (s, t)
