@@ -1,5 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE TupleSections #-}
 
 module Compiler.Parse (parseFiles) where
 
@@ -82,6 +84,14 @@ Token.TokenParser
   , Token.whiteSpace
   } = lexer
 
+getLocation :: Parser Location
+getLocation = do
+  position <- Parsec.getPosition
+  let file = Parsec.sourceName position
+  let line = Parsec.sourceLine position
+  let column = Parsec.sourceColumn position
+  return (file, line, column)
+
 identifierLower :: Parser String
 identifierLower = do
   name <- identifier
@@ -99,44 +109,62 @@ identifierUpper = do
 nameOrOperator :: Parser String
 nameOrOperator = parens operator <|> identifierLower
 
-parseIdentifier :: (Name -> a) -> (Identifier -> a) -> Parser a
+parseIdentifier :: (Name -> a) -> (Identifier -> a) -> Parser (a, Location)
 parseIdentifier f g = do
+  loc <- getLocation
   name <- identifier
   if Char.isUpper (head name)
-    then parseQualified name <|> return (f name)
-    else return $ g (Unqualified name)
+    then parseQualified loc name <|> return (f name, loc)
+    else return (g $ Unqualified name, loc)
   where
-    parseQualified modName = do
+    parseQualified loc modName = do
       reservedOp "."
       name <- nameOrOperator
-      return $ g (Qualified modName name)
+      return (g $ Qualified modName name, loc)
 
 parseNumber :: Parser Expr
-parseNumber =
+parseNumber = do
+  loc <- getLocation
   naturalOrFloat >>= \case
-    Left x -> return $ Int (fromInteger x)
-    Right x -> return (Float x)
+    Left x -> return (Int $ fromInteger x, loc)
+    Right x -> return (Float x, loc)
+
+parseChar :: Parser Expr
+parseChar = do
+  loc <- getLocation
+  x <- charLiteral
+  return (Char x, loc)
+
+parseString :: Parser Expr
+parseString = do
+  loc <- getLocation
+  x <- stringLiteral
+  return (String x, loc)
 
 parseNegate :: Parser Expr
 parseNegate = do
+  loc <- getLocation
   reservedOp "-"
-  fmap Negate parseFactor
+  x <- parseFactor
+  return (Negate x, loc)
 
 parseDefIn :: Parser Expr
 parseDefIn = do
+  loc <- getLocation
   reserved "def"
   defs <- Parsec.many1 parseLocalDef
   reserved "in"
   body <- parseExpr
-  return (DefIn defs body)
+  return (DefIn defs body, loc)
 
 parseLambda :: Parser Expr
 parseLambda = do
+  loc <- getLocation
   reserved "do"
   args <- Parsec.many identifierLower
   reservedOp "."
   body <- parseExpr
-  return (Lambda args body)
+  return (Lambda args body, loc)
 
 parseParensExpr :: Parser Expr
 parseParensExpr = parens $
@@ -145,24 +173,27 @@ parseParensExpr = parens $
   parseLeftSection
   where
     parseOperator = do
+      loc <- getLocation
       name <- operator
       parseRightSection name <|>
-        return (Operator name Nothing Nothing)
+        return (Operator name Nothing Nothing, loc)
 
     parseRightSection name = do
+      loc <- getLocation
       x <- parseCallFactor
-      return $ Operator name Nothing (Just x)
+      return (Operator name Nothing (Just x), loc)
 
     parseLeftSection = do
+      loc <- getLocation
       x <- parseCallFactor
       name <- operator
-      return $ Operator name (Just x) Nothing
+      return (Operator name (Just x) Nothing, loc)
 
 parseFactor :: Parser Expr
 parseFactor =
   parseNumber <|>
-  fmap Char charLiteral <|>
-  fmap String stringLiteral <|>
+  parseChar <|>
+  parseString <|>
   parseIdentifier Label Identifier <|>
   parseNegate <|>
   parseDefIn <|>
@@ -175,20 +206,35 @@ parseCallFactor = do
   parseCall x <|> return x
   where
     parseCall f = do
+      loc <- getLocation
       x <- parseFactor
-      parseCall (Call f x) <|> return (Call f x)
+      let call = (Call f x, loc)
+      parseCall call <|> return call
 
 parseExpr :: Parser Expr
 parseExpr = do
+  loc <- getLocation
   ops <- operatorParsers
-    (\n x y -> Operator n (Just x) (Just y))
+    \n x y -> (Operator n (Just x) (Just y), loc)
   Ex.buildExpressionParser ops parseCallFactor
+
+parseTRecord :: Parser Type
+parseTRecord = do
+  loc <- getLocation
+  row <- braces parseType
+  return (TRecord row, loc)
+
+parseTVariant :: Parser Type
+parseTVariant = do
+  loc <- getLocation
+  row <- brackets parseType
+  return (TVariant row, loc)
 
 parseTFactor :: Parser Type
 parseTFactor =
   parseIdentifier TLabel TCon <|>
-  fmap TRecord (braces parseType) <|>
-  fmap TVariant (brackets parseType) <|>
+  parseTRecord <|>
+  parseTVariant <|>
   parens parseType
 
 parseTCallFactor :: Parser Type
@@ -197,12 +243,15 @@ parseTCallFactor = do
   parseCall t <|> return t
   where
     parseCall f = do
+      loc <- getLocation
       t <- parseTFactor
-      parseCall (TCall f t) <|> return (TCall f t)
+      let call = (TCall f t, loc)
+      parseCall call <|> return call
 
 parseType :: Parser Type
 parseType = do
-  ops <- operatorParsers TOperator
+  loc <- getLocation
+  ops <- operatorParsers \n x y -> (TOperator n x y, loc)
   Ex.buildExpressionParser ops parseTCallFactor
 
 parseAny :: Parser Scheme
@@ -253,13 +302,14 @@ parseFunc func = do
   body <- parseExpr
   return (func name args body)
 
-parseTypeDef :: Parser Def
+parseTypeDef :: Parser SimpleDef
 parseTypeDef = do
   reserved "type"
   name <- nameOrOperator
   parseBase name <|> parseSynonym name
   where
     parseBase name = do
+      loc <- getLocation
       reservedOp "::"
       kind <- parseKind
       wrapper <- fmap Just (parseWrapper name) <|> return Nothing
@@ -279,15 +329,18 @@ parseWrapper name = do
   reservedOp "="
   body <- parseType
   reserved "with"
+  loc <- getLocation
   wrapper <- identifierLower
   unwrapper <- fmap Just parseUnwrapper <|> return Nothing
-  return (Wrapper args body wrapper unwrapper)
+  return $ Wrapper args body (wrapper, loc) unwrapper
   where
     parseUnwrapper = do
+      loc <- getLocation
       reservedOp ","
-      identifierLower
+      name <- identifierLower
+      return (name, loc)
 
-parseForeign :: Parser Def
+parseForeign :: Parser SimpleDef
 parseForeign = do
   reserved "foreign"
   name <- nameOrOperator
@@ -296,7 +349,7 @@ parseForeign = do
   body <- stringLiteral
   return (Foreign name args body)
 
-parseInfix :: Parser Def
+parseInfix :: Parser SimpleDef
 parseInfix = do
   reserved "infix"
   name <- operator
@@ -304,7 +357,7 @@ parseInfix = do
   _ <- natural
   return (Infix name)
 
-parseSyntax :: Parser Def
+parseSyntax :: Parser SimpleDef
 parseSyntax = do
   reserved "syntax"
   name <- nameOrOperator
@@ -320,28 +373,39 @@ parseSyntax = do
       when "char-type" CharType <|>
       when "string-type" StringType <|>
       when "label-type" LabelType <|>
+      when "lazy-type" LazyType <|>
+      when "delay-function" DelayFunction <|>
       when "curly-brackets" CurlyBrackets <|>
       when "square-brackets" SquareBrackets <|>
       when "row-constructor" RowConstructor
 
 parseLocalDef :: Parser LocalDef
-parseLocalDef =
-  parseAnnotation LAnnotation <|>
-  parseFunc LFunc
+parseLocalDef = do
+  loc <- getLocation
+  def <-
+    parseAnnotation LAnnotation <|>
+    parseFunc LFunc
+  return (def, loc)
 
 parseDef :: Parser Def
-parseDef =
-  parseAnnotation Annotation <|>
-  parseFunc Func <|>
-  parseTypeDef <|>
-  parseForeign <|>
-  parseInfix <|>
-  parseSyntax
+parseDef = do
+  loc <- getLocation
+  def <-
+    parseAnnotation Annotation <|>
+    parseFunc Func <|>
+    parseTypeDef <|>
+    parseForeign <|>
+    parseInfix <|>
+    parseSyntax
+  return (def, loc)
 
 parsePort :: Parser Port
-parsePort =
-  parseTypePort <|>
-  parseValuePort
+parsePort = do
+  loc <- getLocation
+  port <-
+    parseTypePort <|>
+    parseValuePort
+  return (port, loc)
   where
     parseTypePort =
       reserved "type" >>
@@ -352,12 +416,15 @@ parsePort =
 
 parseImport :: Parser Import
 parseImport = do
+  loc <- getLocation
   reserved "import"
   modName <- identifierUpper
-  parseOpen modName <|>
+  settings <-
+    parseOpen modName <|>
     parseAlias modName <|>
     parseExposing modName Nothing <|>
     return (Import modName Nothing Nothing)
+  return (settings, loc)
   where
     parseOpen modName = do
       reserved "open"
@@ -413,7 +480,7 @@ data CommentState
   | BlockComment Int
 
 removeComments :: CommentState -> String -> String
-removeComments = curry $ \case
+removeComments = curry \case
   (_, []) -> []
 
   (Code, '-':'-':str) -> removeComments LineComment str

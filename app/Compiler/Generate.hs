@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE BlockArguments #-}
 
 module Compiler.Generate (genModule) where
 
@@ -83,16 +84,17 @@ makeValid name
       ]
 
 genExpr :: Expr -> String
-genExpr = \case
-  Int x -> show x
-  Float x -> show x
-  Char x -> show x
-  String x -> show x
-  Label x -> show x
-  Identifier n -> genIdentifier n
-  DefIn n _ x y -> genDefIn n x y
-  Lambda n x -> genLambda n x
-  Call f x -> genCall f x
+genExpr (expr, _, _) =
+  case expr of
+    Int x -> show x
+    Float x -> show x
+    Char x -> show x
+    String x -> show x
+    Label x -> show x
+    Identifier n -> genIdentifier n
+    DefIn n _ x y -> genDefIn n x y
+    Lambda n x -> genLambda n x
+    Call f x -> genCall f x
 
 genIdentifier :: Identifier -> String
 genIdentifier = \case
@@ -129,7 +131,7 @@ modNames m =
   & List.nub
   where
     foreigns = Map.keys (getForeigns m)
-    funcs = map (\(n, _, _) -> n) (getFuncs m)
+    funcs = map (\(n, _, _, _) -> n) (getFuncs m)
 
 genModuleDef :: ModName -> String
 genModuleDef m = concat
@@ -152,8 +154,24 @@ genWrapper (Wrapper _ _ mk gt) =
       , " = function(x) { return x; }; "
       ]
 
-genModule :: String -> Module -> String
-genModule js m = concat
+lazifyExpr :: Maybe Identifier -> [Int] -> Expr -> Expr
+lazifyExpr maybeDelay nums (expr, loc, num)
+  | num `elem` nums, Just delay <- maybeDelay =
+      ( Call (Identifier delay, loc, 0)
+          (Lambda "_" (lazify expr, loc, 0), loc, 0)
+      , loc, 0)
+  | otherwise = (lazify expr, loc, 0)
+  where
+    recurse = lazifyExpr maybeDelay nums
+
+    lazify = \case
+      DefIn n t x1 x2 -> DefIn n t (recurse x1) (recurse x2)
+      Lambda n x -> Lambda n (recurse x)
+      Call x1 x2 -> Call (recurse x1) (recurse x2)
+      x -> x
+
+genModule :: [Int] -> String -> Module -> String
+genModule nums js m = concat
   [ concatMap genModuleDef (modNames m)
   , js
   , wrapperDefs
@@ -162,6 +180,8 @@ genModule js m = concat
   , genIdentifier (Qualified "Main" "main"), "();"
   ]
   where
+    delay = Map.lookup DelayFunction (getSyntax m)
+
     foreignDefs =
       getForeigns m
       & fmap snd
@@ -170,7 +190,7 @@ genModule js m = concat
 
     funcDefs =
       getFuncs m
-      & map (\(n, _, x) -> (n, x))
+      & map (\(n, _, x, _) -> (n, lazifyExpr delay nums x))
       & concatMap (uncurry genFunc)
 
     wrapperDefs =

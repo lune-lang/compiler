@@ -5,7 +5,7 @@
 
 module Compiler.Error
   ( NameError
-  , Context
+  , Msg
   , notDefined
   , multipleDef
   , exportFailure
@@ -26,7 +26,8 @@ module Compiler.Error
   , noForeignAnno
   , generalAnno
   , noModule
-  , noMain
+  , noMainModule
+  , noMainFunction
   , mutualRecursion
   , synonymRecursion
   , partialApplication
@@ -38,20 +39,19 @@ module Compiler.Error
   , unification
   , kindUnification
   , noLabel
+  , withLocation
   , defContext
   , annoContext
-  , moduleContext
-  , noContext
   ) where
 
 import qualified Control.Monad.Except as Except
 import Control.Monad.Except (ExceptT, MonadError)
 
 import qualified Syntax.Frontend as F
-import Syntax.Desugared
 import Syntax.Common
+import Syntax.Inferred
 
-{--}
+{--
 instance Show Identifier where
   show = \case
     Unqualified n -> parens (operator n) n
@@ -76,15 +76,15 @@ instance NameError Identifier where
     Unqualified n -> concat [ "'", parens (operator n) n, "'" ]
     Qualified m n -> concat [ "'", m, ".", parens (operator n) n, "'" ]
 
-instance NameError F.Port where
+instance NameError F.SimplePort where
   err = \case
     F.ValuePort n -> err n
     F.TypePort n -> err n
 
-newtype Context = Context String
+newtype Msg = Msg String
 
-instance Show Context where
-  show (Context str) = str
+instance Show Msg where
+  show (Msg str) = str
 
 notDefined :: (NameError a, MonadError String m) => a -> m b
 notDefined n = Except.throwError $
@@ -166,9 +166,13 @@ noModule :: (MonadError String m) => ModName -> m b
 noModule m = Except.throwError $
   "module " ++ m ++ " does not exist"
 
-noMain :: (MonadError String m) => m b
-noMain = Except.throwError
-  "module Main does not export 'main' function"
+noMainModule :: (MonadError Msg m) => m b
+noMainModule = Except.throwError $ Msg
+  "There is no Main module in your project"
+
+noMainFunction :: (MonadError Msg m) => m b
+noMainFunction = Except.throwError $ Msg
+  "Main module does not export 'main' function"
 
 mutualRecursion :: (MonadError String m) => m b
 mutualRecursion = Except.throwError
@@ -225,21 +229,17 @@ noLabel t1 t2 = Except.throwError $ concat
   , "* ", prettyType TypeOuter t2
   ]
 
-defContext :: (Functor m) => Identifier -> ExceptT String m a -> ExceptT Context m a
+withLocation :: (Functor m) => Location -> ExceptT String m a -> ExceptT Msg m a
+withLocation (file, line, column) = Except.withExceptT
+  \e -> Msg $ concat [ show file, " (line ", show line, ", column ", show column, "):\n", e ]
+
+defContext :: (Functor m) => Identifier -> ExceptT Msg m a -> ExceptT Msg m a
 defContext n = Except.withExceptT
-  \e -> Context $ concat [ "Error in definition of ", err n, ":\n", e ]
+  \(Msg e) -> Msg $ concat [ "Error in definition of ", err n, ":\n", e ]
 
-annoContext :: (Functor m) => [Identifier] -> ExceptT String m a -> ExceptT Context m a
+annoContext :: (Functor m) => [Identifier] -> ExceptT Msg m a -> ExceptT Msg m a
 annoContext ns = Except.withExceptT
-  \e -> Context $ concat [ "Error in annotation for ", unwords (map err ns), ":\n", e ]
-
-moduleContext :: (Functor m) => ModName -> ExceptT String m a -> ExceptT Context m a
-moduleContext m = Except.withExceptT
-  \e -> Context $ concat [ "Error in module ", m, ":\n", e ]
-
-noContext :: (Functor m) => ExceptT String m a -> ExceptT Context m a
-noContext = Except.withExceptT
-  \e -> Context $ "Error: " ++ e
+  \(Msg e) -> Msg $ concat [ "Error in annotation for ", unwords (map err ns), ":\n", e ]
 
 data TypeContext
   = TypeOuter

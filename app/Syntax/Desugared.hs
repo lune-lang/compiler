@@ -1,10 +1,10 @@
 {-# LANGUAGE LambdaCase #-}
 
 module Syntax.Desugared
-  ( Expr(..)
-  , Origin(..)
-  , TypeVar
-  , Type(..)
+  ( SimpleExpr(..)
+  , Expr
+  , SimpleType(..)
+  , Type
   , Scheme(..)
   , Wrapper(..)
   , Module(..)
@@ -17,7 +17,7 @@ import qualified Control.Lens as Lens
 
 import Syntax.Common
 
-data Expr
+data SimpleExpr
   = Int Int
   | Float Double
   | Char Char
@@ -28,27 +28,26 @@ data Expr
   | Lambda Name Expr
   | Call Expr Expr
 
-data Origin = Annotated | Inferred
-  deriving (Eq)
+type Expr = (SimpleExpr, Location, Int)
 
-type TypeVar = (Name, Origin)
-
-data Type
+data SimpleType
   = TCon Identifier
-  | TVar TypeVar
+  | TVar Name
   | TLabel Label
   | TCall Type Type
   deriving (Eq)
+
+type Type = (SimpleType, Location)
 
 data Scheme = Forall [Name] Type
 
 data Wrapper = Wrapper [Name] Type Identifier (Maybe Identifier)
 
 data Module = Module
-  { getFuncs :: [(Identifier, Maybe Scheme, Expr)]
+  { getFuncs :: [(Identifier, Maybe Scheme, Expr, Location)]
   , getForeigns :: Map Identifier (Scheme, String)
   , getTypes :: Map Identifier (Kind, Maybe Wrapper)
-  , getSynonyms :: [(Identifier, [Name], Type)]
+  , getSynonyms :: [(Identifier, [Name], Type, Location)]
   , getSyntax :: Map Role Identifier
   }
 

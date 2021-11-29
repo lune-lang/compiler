@@ -1,12 +1,18 @@
 module Syntax.Frontend
-  ( Expr(..)
-  , Type(..)
+  ( SimpleExpr(..)
+  , Expr
+  , SimpleType(..)
+  , Type
   , Scheme(..)
   , Wrapper(..)
-  , LocalDef(..)
-  , Def(..)
-  , Port(..)
-  , Import(..)
+  , SimpleLocalDef(..)
+  , LocalDef
+  , SimpleDef(..)
+  , Def
+  , SimplePort(..)
+  , Port
+  , SimpleImport(..)
+  , Import
   , Module(..)
   ) where
 
@@ -14,7 +20,7 @@ import qualified Control.Lens as Lens
 
 import Syntax.Common
 
-data Expr
+data SimpleExpr
   = Int Int
   | Float Double
   | Char Char
@@ -27,7 +33,9 @@ data Expr
   | Lambda [Name] Expr
   | Call Expr Expr
 
-data Type
+type Expr = (SimpleExpr, Location)
+
+data SimpleType
   = TCon Identifier
   | TOperator Name Type Type
   | TLabel Label
@@ -35,15 +43,19 @@ data Type
   | TVariant Type
   | TCall Type Type
 
+type Type = (SimpleType, Location)
+
 data Scheme = Forall [Name] Type
 
-data Wrapper = Wrapper [Name] Type Name (Maybe Name)
+data Wrapper = Wrapper [Name] Type (Name, Location) (Maybe (Name, Location))
 
-data LocalDef
+data SimpleLocalDef
   = LAnnotation [Name] Scheme
   | LFunc Name [Name] Expr
 
-data Def
+type LocalDef = (SimpleLocalDef, Location)
+
+data SimpleDef
   = Annotation [Name] Scheme
   | Func Name [Name] Expr
   | Foreign Name [Name] String
@@ -52,14 +64,20 @@ data Def
   | Infix Name
   | Syntax Name Role
 
-data Port
+type Def = (SimpleDef, Location)
+
+data SimplePort
   = ValuePort Name
   | TypePort Name
   deriving (Eq)
 
-data Import
+type Port = (SimplePort, Location)
+
+data SimpleImport
   = Import ModName (Maybe Name) (Maybe [Port])
   | ImportOpen ModName
+
+type Import = (SimpleImport, Location)
 
 data Module = Module
   { getExports :: [Port]

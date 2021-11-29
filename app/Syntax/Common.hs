@@ -1,5 +1,8 @@
 module Syntax.Common
-  ( Name
+  ( Line
+  , Column
+  , Location
+  , Name
   , Label
   , ModName
   , Identifier(..)
@@ -7,6 +10,10 @@ module Syntax.Common
   , Role(..)
   , opChars
   ) where
+
+type Line = Int
+type Column = Int
+type Location = (FilePath, Line, Column)
 
 type Name = String
 type Label = String
@@ -33,6 +40,8 @@ data Role
   | CharType
   | StringType
   | LabelType
+  | LazyType
+  | DelayFunction
   | CurlyBrackets
   | SquareBrackets
   | RowConstructor

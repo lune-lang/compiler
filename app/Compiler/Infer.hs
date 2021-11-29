@@ -10,7 +10,7 @@ import qualified Data.Bifunctor as Bf
 import qualified Data.Foldable as Fold
 import qualified Text.Read as Read
 import qualified Control.Monad as Monad
-import Control.Monad ((>=>))
+import Data.Function ((&))
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
@@ -19,18 +19,32 @@ import Data.Set (Set, (\\))
 
 import qualified Control.Monad.Except as Except
 import qualified Control.Monad.Reader as Reader
+import qualified Control.Monad.Writer as Writer
 import qualified Control.Monad.State as State
+import qualified Control.Monad.RWS as RWS
 import Control.Monad.Except (ExceptT)
-import Control.Monad.Reader (ReaderT)
-import Control.Monad.State (State)
+import Control.Monad.RWS (RWS)
 
 import qualified Control.Lens as Lens
 
 import qualified Compiler.Error as Error
-import Syntax.Desugared
+import qualified Syntax.Desugared as D
 import Syntax.Common
+import Syntax.Desugared (SimpleExpr(..), Expr, Wrapper(..), Module(..))
+import Syntax.Inferred
 
 import Debug.Trace
+
+convertType :: D.Type -> Type
+convertType (tipe, _) =
+  case tipe of
+    D.TCon n -> TCon n
+    D.TVar n -> TVar (n, Annotated)
+    D.TLabel n -> TLabel n
+    D.TCall t1 t2 -> TCall (convertType t1) (convertType t2)
+
+convertScheme :: D.Scheme -> Scheme
+convertScheme (D.Forall vs t) = Forall vs (convertType t)
 
 pattern TCall2 t1 t2 t3 = TCall (TCall t1 t2) t3
 pattern TCall3 t1 t2 t3 t4 = TCall (TCall2 t1 t2 t3) t4
@@ -38,7 +52,7 @@ pattern TCall3 t1 t2 t3 t4 = TCall (TCall2 t1 t2 t3) t4
 data Env = Env
   { _typeEnv :: Map Identifier Scheme
   , _kindEnv :: Map Identifier Kind
-  , _synonyms :: Map Identifier ([Name], Type)
+  , _synonyms :: Map Identifier ([Name], D.Type)
   , _syntax :: Map Role Identifier
   }
 
@@ -86,7 +100,7 @@ instance Substitutable a => Substitutable (Map k a) where
   apply s = fmap (apply s)
   freeVars = foldMap freeVars
 
-type Constraint = (Type, Type)
+type Constraint = (Location, Maybe (Type, Int), Type, Type)
 
 data Stream a = Cons a (Stream a)
 
@@ -97,64 +111,75 @@ data InferState = InferState
 
 Lens.makeLenses ''InferState
 
-type Infer e = ExceptT e (ReaderT Env (State InferState))
+type InferWith e = ExceptT e (RWS Env [Int] InferState)
+type Infer = InferWith Error.Msg
 
-extendEnv :: Identifier -> Scheme -> Infer e a -> Infer e a
+extendEnv :: Identifier -> Scheme -> Infer a -> Infer a
 extendEnv n t = Reader.local $ Lens.over typeEnv (Map.insert n t)
 
-extendKindEnv :: Identifier -> Kind -> Infer e a  -> Infer e a
+extendKindEnv :: Identifier -> Kind -> Infer a  -> Infer a
 extendKindEnv n k = Reader.local $ Lens.over kindEnv (Map.insert n k)
 
-specialType :: Role -> Infer String Type -> Infer String Type
-specialType role err = do
+specialType :: Role -> Location -> InferWith String Type -> Infer Type
+specialType role loc err = do
   special <- Reader.asks (Lens.view syntax)
   case Map.lookup role special of
-    Nothing -> err
-    Just n -> unaliasType (TCon n)
+    Nothing -> Error.withLocation loc err
+    Just n -> convertType <$> unaliasType (D.TCon n, loc)
 
-functionType :: Type -> Type -> Infer String Type
-functionType t1 t2 = do
-  t <- specialType FunctionType Error.functionType
+functionType :: Location -> Type -> Type -> Infer Type
+functionType loc t1 t2 = do
+  t <- specialType FunctionType loc Error.functionType
   return (TCall2 t t1 t2)
 
-numberType :: Type -> Infer String Type
-numberType t1 = do
-  t <- specialType NumberType Error.numberType
+numberType :: Location -> Type -> Infer Type
+numberType loc t1 = do
+  t <- specialType NumberType loc Error.numberType
   return (TCall t t1)
 
-floatType :: Infer String Type
-floatType = specialType FloatType Error.floatType
+floatType :: Location -> Infer Type
+floatType loc = specialType FloatType loc Error.floatType
 
-charType :: Infer String Type
-charType = specialType CharType Error.charType
+charType :: Location -> Infer Type
+charType loc = specialType CharType loc Error.charType
 
-stringType :: Infer String Type
-stringType = specialType StringType Error.stringType
+stringType :: Location -> Infer Type
+stringType loc = specialType StringType loc Error.stringType
 
-labelType :: Label -> Infer String Type
-labelType n = do
-  t <- specialType LabelType Error.labelType
+labelType :: Location -> Label -> Infer Type
+labelType loc n = do
+  t <- specialType LabelType loc Error.labelType
   return $ TCall t (TLabel n)
 
-rowCons :: Infer String (Maybe Identifier)
+lazyType :: Infer (Maybe (Type -> Type))
+lazyType = do
+  n <- Reader.asks (Map.lookup LazyType . Lens.view syntax)
+  return $ fmap (TCall . TCon) n
+
+rowCons :: Infer (Maybe Identifier)
 rowCons = Reader.asks (Map.lookup RowConstructor . Lens.view syntax)
 
-instantiate :: Origin -> Scheme -> Infer e Type
+instantiate :: Origin -> Scheme -> Infer Type
 instantiate origin (Forall vs t) = do
   vs' <- mapM (const $ freshVar origin) vs
   let s = Map.fromList $ zip vs vs'
   return (apply s t)
 
-generalise :: Type -> Infer e Scheme
+generalise :: Type -> Infer Scheme
 generalise t = do
   env <- Reader.asks (Lens.view typeEnv)
   let vs = freeVars t \\ freeVars env
   return $ Forall (Set.toList vs) t
 
-unify :: Type -> Type -> Infer e ()
-unify t1 t2 = State.modify $ Lens.over constraints ((t1, t2) :)
+unify :: Location -> Type -> Type -> Infer ()
+unify loc t1 t2 = State.modify $
+  Lens.over constraints ((loc, Nothing, t1, t2) :)
 
-freshVar :: Origin -> Infer e Type
+unifyDelay :: Location -> (Type, Int) -> Type -> Type -> Infer ()
+unifyDelay loc alt t1 t2 = State.modify $
+  Lens.over constraints ((loc, Just alt, t1, t2) :)
+
+freshVar :: Origin -> Infer Type
 freshVar origin = do
   var <- State.gets (first . Lens.view freshNames)
   State.modify $ Lens.over freshNames rest
@@ -163,217 +188,287 @@ freshVar origin = do
     first (Cons n _) = n
     rest (Cons _ ns) = ns
 
-inferType :: Expr -> Infer String Type
-inferType = \case
-  Int _ -> freshVar Inferred >>= numberType
-  Float _ -> floatType
-  Char _ -> charType
-  String _ -> stringType
-  Label n -> labelType n
+inferType :: Expr -> Infer Type
+inferType (expr, loc, _) =
+  case expr of
+    Int _ -> freshVar Inferred >>= numberType loc
+    Float _ -> floatType loc
+    Char _ -> charType loc
+    String _ -> stringType loc
+    Label n -> labelType loc n
 
-  Identifier n -> do
-    env <- Reader.asks (Lens.view typeEnv)
-    maybe (Error.notDefined n) (instantiate Inferred) (Map.lookup n env)
+    Identifier n -> do
+      env <- Reader.asks (Lens.view typeEnv)
+      maybe (Error.withLocation loc $ Error.notDefined n)
+        (instantiate Inferred) (Map.lookup n env)
 
-  DefIn n anno x1 x2 -> do
-    var <- freshVar Inferred
-    t <- extendEnv (Unqualified n) (Forall [] var) (inferType x1)
-    unify t var
-    anno' <- mapM (unaliasScheme >=> instantiate Annotated) anno
-    mapM_ (unify t) anno'
-    s <- solve
-    equivalent anno' $ fmap (apply s) anno'
-    Reader.local (Lens.over typeEnv $ apply s) do
-      sc <- generalise (apply s t)
-      extendEnv (Unqualified n) sc (inferType x2)
+    DefIn n maybeAnno x1@(_, loc1, num) x2 ->
+      let
+        unifyAnno t anno = do
+          maybeLazy <- lazyType
+          case maybeLazy of
+            Nothing -> unify loc1 t anno
+            Just lazy -> unifyDelay loc1 (lazy t, num) t anno
 
-  Lambda n x -> do
-    var <- freshVar Inferred
-    t <- extendEnv (Unqualified n) (Forall [] var) (inferType x)
-    functionType var t
+        getSubst t =
+          case maybeAnno of
+            Nothing -> solve
+            Just anno@(D.Forall _ (_, annoLoc)) -> do
+              anno' <- instantiate Annotated . convertScheme =<< unaliasScheme anno
+              unifyAnno t anno'
+              s <- solve
+              equivalent annoLoc anno' (apply s anno')
+              return s
 
-  Call x1 x2 -> do
-    t1 <- inferType x1
-    t2 <- inferType x2
-    var <- freshVar Inferred
-    functionType t2 var >>= unify t1
-    return var
+        getType = do
+          var <- freshVar Inferred
+          t <- extendEnv (Unqualified n) (Forall [] var) (inferType x1)
+          unify loc1 t var
+          s <- getSubst t
+          return (s, t)
+      in do
+      (s, t) <- getType
+      Reader.local (Lens.over typeEnv $ apply s) do
+        sc <- generalise (apply s t)
+        extendEnv (Unqualified n) sc (inferType x2)
 
-unifies :: Maybe Identifier -> Type -> Type -> Infer String Subst
-unifies cons = curry \case
+    Lambda n x -> do
+      var <- freshVar Inferred
+      t <- extendEnv (Unqualified n) (Forall [] var) (inferType x)
+      functionType loc var t
+
+    Call x1@(_, loc1, _) x2@(_, loc2, num) -> do
+      t1 <- inferType x1
+      t2 <- inferType x2
+      var <- freshVar Inferred
+      strict <- functionType loc1 t2 var
+      maybeLazy <- lazyType
+      case maybeLazy of
+        Nothing -> unify loc2 strict t1
+        Just lazy -> do
+          nonstrict <- functionType loc1 (lazy t2) var
+          unifyDelay loc2 (nonstrict, num) strict t1
+      return var
+
+unifies :: Maybe Identifier -> Location -> Type -> Type -> Infer Subst
+unifies cons loc = curry \case
   (t1, t2) | t1 == t2 -> return nullSubst
 
-  (TVar (n, _), t) -> bind n t
-  (t, TVar (n, Inferred)) -> bind n t
-  (t, TVar (n, Annotated)) -> Error.generalAnno
+  (TVar n, t) -> bind loc n t
+  (t, TVar n) -> bind loc n t
 
   (TCall3 (TCon n) l v1 r1, t2) | Just cons' <- cons, n == cons' -> do
-      (v2, r2) <- rowGet cons' l t2
-      s1 <- unifies cons v1 v2
-      s2 <- unifies cons (apply s1 r1) (apply s1 r2)
+      (v2, r2) <- rowGet cons' loc l t2
+      s1 <- unifies cons loc v1 v2
+      s2 <- unifies cons loc (apply s1 r1) (apply s1 r2)
       return (compose s2 s1)
 
   (TCall t1 t2, TCall t3 t4) -> do
-    s1 <- unifies cons t1 t3
-    s2 <- unifies cons (apply s1 t2) (apply s1 t4)
+    s1 <- unifies cons loc t1 t3
+    s2 <- unifies cons loc (apply s1 t2) (apply s1 t4)
     return (compose s2 s1)
 
-  (t1, t2) -> Error.unification t1 t2
+  (t1, t2) -> Error.withLocation loc (Error.unification t1 t2)
 
-rowGet :: Identifier -> Type -> Type -> Infer String (Type, Type)
-rowGet cons label = \case
+unifiesDelay :: Maybe Identifier -> Location -> (Type, Int) -> Type -> Type -> Infer Subst
+unifiesDelay cons loc (alt, num) t1 t2 =
+  unifies cons loc t1 t2 `Except.catchError` \e -> do
+    let withE = Except.withExceptT (const e)
+    Writer.tell [num]
+    withE (unifies cons loc alt t2)
+
+rowGet :: Identifier -> Location -> Type -> Type -> Infer (Type, Type)
+rowGet cons loc label = \case
   (TCall3 (TCon n) l v r) | n == cons ->
     if l == label then return (v, r)
-    else Bf.second (TCall3 (TCon n) l v) <$> rowGet cons label r
+    else Bf.second (TCall3 (TCon n) l v) <$> rowGet cons loc label r
 
   TVar (_, origin) -> (,) <$> freshVar origin <*> freshVar origin
 
-  t -> Error.noLabel label t
+  t -> Error.withLocation loc (Error.noLabel label t)
 
-bind :: Name -> Type -> Infer String Subst
-bind n t
-  | Set.member n (freeVars t) = Error.occursCheck
+bind :: Location -> (Name, Origin) -> Type -> Infer Subst
+bind loc (n, origin) t
+  | origin == Annotated, not variable =
+      Error.withLocation loc Error.generalAnno
+  | Set.member n (freeVars t) =
+      Error.withLocation loc Error.occursCheck
   | otherwise = return (Map.singleton n t)
+  where
+    variable = case t of
+      TVar _ -> True
+      _ -> False
 
-solver :: Subst -> [Constraint] -> Infer String Subst
+solver :: Subst -> [Constraint] -> Infer Subst
 solver s = \case
   [] -> return s
-  (t1, t2) : cs -> do
+  (loc, maybeAlt, t1, t2) : cs -> do
     cons <- rowCons
-    s1 <- unifies cons t1 t2
+    s1 <- case maybeAlt of
+      Nothing -> unifies cons loc t1 t2
+      Just alt -> unifiesDelay cons loc alt t1 t2
     let sub = Bf.bimap (apply s1) (apply s1)
     solver (compose s1 s) (map sub cs)
 
-solve :: Infer String Subst
+solve :: Infer Subst
 solve = State.gets (Lens.view constraints) >>= solver nullSubst
 
-kindMapUnion :: Map Name Kind -> Map Name Kind -> Infer String (Map Name Kind)
-kindMapUnion s1 s2 = do
+kindMapUnion :: Location -> Map Name Kind -> Map Name Kind -> Infer (Map Name Kind)
+kindMapUnion loc s1 s2 = do
   sequence_ (Map.mapWithKey checkEqual s1)
   return (s1 <> s2)
   where
     checkEqual n k =
       case Map.lookup n s2 of
-        Nothing -> return () :: Infer String ()
+        Nothing -> return () :: Infer ()
         Just k1 | k == k1 -> return ()
-        _ -> Error.kindCheck n
+        _ -> Error.withLocation loc (Error.kindCheck n)
 
-inferKind :: Type -> Infer String (Kind, Map Name Kind)
-inferKind = \case
-  TCon n -> do
-    env <- Reader.asks (Lens.view kindEnv)
-    case Map.lookup n env of
-      Nothing -> Error.notDefined n
-      Just k -> return (k, Map.empty)
+inferKind :: D.Type -> Infer (Kind, Map Name Kind)
+inferKind (tipe, loc) =
+  case tipe of
+    D.TCon n -> do
+      env <- Reader.asks (Lens.view kindEnv)
+      case Map.lookup n env of
+        Nothing -> Error.withLocation loc (Error.notDefined n)
+        Just k -> return (k, Map.empty)
 
-  TLabel n -> return (KLabel, Map.empty)
-  TVar n -> Error.typeVariables
+    D.TLabel n -> return (KLabel, Map.empty)
+    D.TVar n -> Error.withLocation loc Error.typeVariables
 
-  TCall t1 t2 -> do
-    (k1, s1) <- inferKind t1
-    case k1 of
-      KArr k2 k3 -> do
-        s2 <- checkKind k2 t2
-        s3 <- kindMapUnion s1 s2
-        return (k3, s3)
-      _ -> Error.typeCall t1
+    D.TCall t1@(_, loc1) t2 -> do
+      (k1, s1) <- inferKind t1
+      case k1 of
+        KArr k2 k3 -> do
+          s2 <- checkKind k2 t2
+          s3 <- kindMapUnion loc s1 s2
+          return (k3, s3)
+        _ -> Error.withLocation loc1 $ Error.typeCall (convertType t1)
 
-checkKind :: Kind -> Type -> Infer String (Map Name Kind)
+checkKind :: Kind -> D.Type -> Infer (Map Name Kind)
 checkKind k = \case
-  TVar (n, _) -> return (Map.singleton n k)
+  (D.TVar n, _) -> return (Map.singleton n k)
 
-  t -> do
+  t@(_, loc) -> do
     (k1, s) <- inferKind t
     if k == k1
       then return s
-      else Error.kindUnification k k1
+      else Error.withLocation loc (Error.kindUnification k k1)
 
-checkFuncs :: [(Identifier, Maybe Scheme, Expr)] -> Infer Error.Context ()
+checkFuncs :: [(Identifier, Maybe D.Scheme, Expr, Location)] -> Infer ()
 checkFuncs = \case
   [] -> return ()
-  (n, anno, x) : fs -> do
-    (s, t) <- Error.defContext n do
-      var <- freshVar Inferred
-      t <- extendEnv n (Forall [] var) (inferType x)
-      unify t var
-      anno' <- mapM (unaliasScheme >=> instantiate Annotated) anno
-      mapM_ (unify t) anno'
-      s <- solve
-      equivalent anno' $ fmap (apply s) anno'
-      return (s, t)
+  (n, maybeAnno, x@(_, loc, num), _) : fs ->
+    let
+      unifyAnno t anno = do
+        maybeLazy <- lazyType
+        case maybeLazy of
+          Nothing -> unify loc t anno
+          Just lazy -> unifyDelay loc (lazy t, num) t anno
+
+      getSubst t =
+        case maybeAnno of
+          Nothing -> solve
+          Just anno@(D.Forall _ (_, annoLoc)) -> do
+            anno' <- instantiate Annotated . convertScheme =<< unaliasScheme anno
+            unifyAnno t anno'
+            s <- solve
+            equivalent annoLoc anno' (apply s anno')
+            return s
+
+      getType = do
+        var <- freshVar Inferred
+        t <- extendEnv n (Forall [] var) (inferType x)
+        unify loc t var
+        s <- getSubst t
+        return (s, t)
+    in do
+    (s, t) <- Error.defContext n getType
     Reader.local (Lens.over typeEnv $ apply s) $ do
       sc <- generalise (apply s t)
       State.modify $ Lens.over constraints (const [])
       extendEnv n sc (checkFuncs fs)
 
-equivalent :: Maybe Type -> Maybe Type -> Infer String ()
-equivalent = curry \case
-  (Nothing, _) -> return ()
-  (_, Nothing) -> return ()
-  (Just t1, Just t2) ->
-    let
-      pairings = curry \case
-        (TCall t1 t2, TCall t3 t4) -> pairings t1 t3 <> pairings t2 t4
-        (TVar (v1, _), TVar (v2, _)) -> Set.singleton (v1, v2)
-        _ -> Set.empty
+equivalent :: Location -> Type -> Type -> Infer ()
+equivalent loc t1 t2 =
+  Monad.when bad $ Error.withLocation loc (Error.unification t1 t2)
+  where
+    pairings = curry \case
+      (TCall t1 t2, TCall t3 t4) -> pairings t1 t3 <> pairings t2 t4
+      (TVar (v1, _), TVar (v2, _)) -> Set.singleton (v1, v2)
+      _ -> Set.empty
 
-      pairs = pairings t1 t2
+    pairs = pairings t1 t2
 
-      bad =
-        Set.size (Set.map fst pairs) < Set.size pairs ||
-        Set.size (Set.map snd pairs) < Set.size pairs
-    in
-    Monad.when bad (Error.unification t1 t2)
+    bad =
+      Set.size (Set.map fst pairs) < Set.size pairs ||
+      Set.size (Set.map snd pairs) < Set.size pairs
 
-unaliasType :: Type -> Infer String Type
+applyDesugared :: Map Name D.Type -> D.Type -> D.Type
+applyDesugared s (tipe, loc) =
+  case tipe of
+    D.TCon n -> (D.TCon n, loc)
+    D.TLabel n -> (D.TLabel n, loc)
+    D.TVar n -> Maybe.fromMaybe (D.TVar n, loc) (Map.lookup n s)
+    D.TCall t1 t2 ->
+      let
+        t1' = applyDesugared s t1
+        t2' = applyDesugared s t2
+      in
+      (D.TCall t1' t2', loc)
+
+unaliasType :: D.Type -> Infer D.Type
 unaliasType t = do
   syns <- Reader.asks (Lens.view synonyms)
   case getFunc t of
     Nothing -> keepLooking
-    Just n ->
+    Just (n, loc) ->
       case Map.lookup n syns of
         Nothing -> keepLooking
         Just (as, t2) ->
           case compare (length as) (length args) of
             LT -> keepLooking
-            GT -> Error.partialApplication n
+            GT -> Error.withLocation loc (Error.partialApplication n)
             EQ -> do
               args' <- mapM unaliasType args
-              return $ apply (Map.fromList $ zip as args') t2
+              return $ applyDesugared (Map.fromList $ zip as args') t2
 
   where
     args = getArgs t
     keepLooking =
-      case t of
-        TCon _ -> return t
-        TLabel _ -> return t
-        TVar _ -> return t
-        TCall t1 t2 -> TCall
-          <$> unaliasType t1
-          <*> unaliasType t2
+      case fst t of
+        D.TCon _ -> return t
+        D.TLabel _ -> return t
+        D.TVar _ -> return t
+        D.TCall t1 t2 -> do
+          t1' <- unaliasType t1
+          t2' <- unaliasType t2
+          return (D.TCall t1' t2', snd t)
 
-unaliasScheme :: Scheme -> Infer String Scheme
-unaliasScheme (Forall vs t) = Forall vs <$> unaliasType t
+unaliasScheme :: D.Scheme -> Infer D.Scheme
+unaliasScheme (D.Forall vs t) = D.Forall vs <$> unaliasType t
 
-getFunc :: Type -> Maybe Identifier
-getFunc = \case
-  TCon n -> Just n
-  TLabel _ -> Nothing
-  TVar _ -> Nothing
-  TCall t1 _ -> getFunc t1
+getFunc :: D.Type -> Maybe (Identifier, Location)
+getFunc (tipe, loc) =
+  case tipe of
+    D.TCon n -> Just (n, loc)
+    D.TLabel _ -> Nothing
+    D.TVar _ -> Nothing
+    D.TCall t1 _ -> getFunc t1
 
-getArgs :: Type -> [Type]
-getArgs = \case
-  TCon _ -> []
-  TLabel _ -> []
-  TVar _ -> []
-  TCall t1 t2 -> getArgs t1 ++ [t2]
+getArgs :: D.Type -> [D.Type]
+getArgs (tipe, _) =
+  case tipe of
+    D.TCon _ -> []
+    D.TLabel _ -> []
+    D.TVar _ -> []
+    D.TCall t1 t2 -> getArgs t1 ++ [t2]
 
-synonymMap :: [(Identifier, [Name], Type)] -> Infer Error.Context (Map Identifier ([Name], Type))
+synonymMap :: [(Identifier, [Name], D.Type, Location)] -> Infer (Map Identifier ([Name], D.Type))
 synonymMap = Fold.foldrM addSynonym Map.empty
 
-addSynonym :: (Identifier, [Name], Type) -> Map Identifier ([Name], Type) -> Infer Error.Context (Map Identifier ([Name], Type))
-addSynonym (n, as, t) syns = do
+addSynonym :: (Identifier, [Name], D.Type, Location) -> Map Identifier ([Name], D.Type) -> Infer (Map Identifier ([Name], D.Type))
+addSynonym (n, as, t, _) syns = do
   Error.defContext n do
     syns' <- withSyn $ mapM (secondM unaliasType) syns
     return (syn <> syns')
@@ -385,31 +480,36 @@ addSynonym (n, as, t) syns = do
       y' <- f y
       return (x, y')
 
-wrapperEnv :: Identifier -> (Kind, Maybe Wrapper) -> Infer Error.Context Env
+wrapperEnv :: Identifier -> (Kind, Maybe Wrapper) -> Infer Env
 wrapperEnv n (_, w) =
   case w of
     Nothing -> return mempty
-    Just (Wrapper vs t maker getter) ->
+    Just (Wrapper vs t@(_, loc) maker getter) ->
       let
-        typeVar v = TVar (v, Annotated)
-        wrapped = foldl TCall (TCon n) (map typeVar vs)
+        wrapped = vs
+          & map (\v -> (D.TVar v, loc))
+          & foldl (\t1 t2 -> (D.TCall t1 t2, loc)) (D.TCon n, loc)
       in
       Error.defContext n do
-        t' <- unaliasType t
+        unwrapped <- unaliasType t
         checkKind KType wrapped
-        checkKind KType t'
-        makerType <- Forall vs <$> functionType t' wrapped
-        getterType <- Forall vs <$> functionType wrapped t'
+        checkKind KType unwrapped
+        let wrapped' = convertType wrapped
+        let unwrapped' = convertType unwrapped
+        makerType <- Forall vs <$> functionType loc unwrapped' wrapped'
+        getterType <- Forall vs <$> functionType loc wrapped' unwrapped'
         let makerEnv = Map.singleton maker makerType
         let typeEnv = case getter of
               Nothing -> makerEnv
               Just gt -> Map.insert gt getterType makerEnv
         return (Env typeEnv Map.empty Map.empty Map.empty)
 
-checkModule :: Module -> Either Error.Context ()
+checkModule :: Module -> Either Error.Msg [Int]
 checkModule (Module funcs foreigns types syns syntax) =
-  State.evalState (Reader.runReaderT (Except.runExceptT check) env) state
+  nums <$ result
   where
+    (result, _, nums) = RWS.runRWS (Except.runExceptT check) env state
+
     state = InferState [] (foldr Cons undefined fresh)
     env = Env Map.empty (fmap fst types) Map.empty syntax
 
@@ -420,14 +520,14 @@ checkModule (Module funcs foreigns types syns syntax) =
     unaliasForeign n (t, _) =
       Error.defContext n (unaliasScheme t)
 
-    checkForeign n (Forall _ t) =
+    checkForeign n (D.Forall _ t) =
       Error.defContext n $ Monad.void (checkKind KType t)
 
     check = do
       syns' <- synonymMap syns
       Reader.local (Lens.over synonyms $ const syns') do
         foreigns' <- sequence (Map.mapWithKey unaliasForeign foreigns)
-        let foreignE = Env foreigns' Map.empty Map.empty Map.empty
+        let foreignE = Env (fmap convertScheme foreigns') Map.empty Map.empty Map.empty
         wrapperE <- Fold.fold <$> sequence (Map.mapWithKey wrapperEnv types)
         Reader.local ((foreignE <> wrapperE) <>) do
           sequence_ (Map.mapWithKey checkForeign foreigns')
