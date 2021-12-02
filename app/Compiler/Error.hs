@@ -24,7 +24,6 @@ module Compiler.Error
   , squareBrackets
   , annotation
   , noForeignAnno
-  , generalAnno
   , noModule
   , noMainModule
   , noMainFunction
@@ -34,6 +33,7 @@ module Compiler.Error
   , kindInference
   , kindCheck
   , typeVariables
+  , generalAnno
   , occursCheck
   , typeCall
   , unification
@@ -158,10 +158,6 @@ noForeignAnno :: (NameError a, MonadError String m) => a -> m b
 noForeignAnno n = Except.throwError $
   "no type annotation for foreign function " ++ err n
 
-generalAnno :: (MonadError String m) => m b
-generalAnno = Except.throwError
-  "type annotation is more general than inferred type"
-
 noModule :: (MonadError String m) => ModName -> m b
 noModule m = Except.throwError $
   "module " ++ m ++ " does not exist"
@@ -198,9 +194,19 @@ typeVariables :: (MonadError String m) => m b
 typeVariables = Except.throwError
   "too many type variables"
 
-occursCheck :: (MonadError String m) => m b
-occursCheck = Except.throwError
-  "infinite type"
+generalAnno :: (MonadError String m) => Name -> Type -> m b
+generalAnno n t = Except.throwError $ concat
+  [ "cannot bind annotated type variable ", err n, " to the following type:\n"
+  , "* ", prettyType TypeOuter t, "\n"
+  , "try making your type annotation more specific"
+  ]
+
+occursCheck :: (MonadError String m) => Name -> Type -> m b
+occursCheck n t = Except.throwError $ concat
+  [ "cannot bind type variable ", err n, " to the following type:\n"
+  , "* ", prettyType TypeOuter t, "\n"
+  , "doing so would produce an infinite type"
+  ]
 
 typeCall :: (MonadError String m) => Type -> m b
 typeCall t = Except.throwError $ concat

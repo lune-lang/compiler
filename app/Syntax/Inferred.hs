@@ -6,7 +6,7 @@ module Syntax.Inferred
 
 import Syntax.Common
 
-data Origin = Annotated | Inferred
+data Origin = Annotated Name | Inferred
   deriving (Eq)
 
 data Type

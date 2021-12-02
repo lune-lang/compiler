@@ -39,7 +39,7 @@ convertType :: D.Type -> Type
 convertType (tipe, _) =
   case tipe of
     D.TCon n -> TCon n
-    D.TVar n -> TVar (n, Annotated)
+    D.TVar n -> TVar (n, Annotated n)
     D.TLabel n -> TLabel n
     D.TCall t1 t2 -> TCall (convertType t1) (convertType t2)
 
@@ -159,9 +159,9 @@ lazyType = do
 rowCons :: Infer (Maybe Identifier)
 rowCons = Reader.asks (Map.lookup RowConstructor . Lens.view syntax)
 
-instantiate :: Origin -> Scheme -> Infer Type
+instantiate :: (Name -> Origin) -> Scheme -> Infer Type
 instantiate origin (Forall vs t) = do
-  vs' <- mapM (const $ freshVar origin) vs
+  vs' <- mapM (freshVar . origin) vs
   let s = Map.fromList $ zip vs vs'
   return (apply s t)
 
@@ -200,7 +200,7 @@ inferType (expr, loc, _) =
     Identifier n -> do
       env <- Reader.asks (Lens.view typeEnv)
       maybe (Error.withLocation loc $ Error.notDefined n)
-        (instantiate Inferred) (Map.lookup n env)
+        (instantiate $ const Inferred) (Map.lookup n env)
 
     DefIn n maybeAnno x1@(_, loc1, num) x2 ->
       let
@@ -288,12 +288,13 @@ rowGet cons loc label = \case
   t -> Error.withLocation loc (Error.noLabel label t)
 
 bind :: Location -> (Name, Origin) -> Type -> Infer Subst
-bind loc (n, origin) t
-  | origin == Annotated, not variable =
-      Error.withLocation loc Error.generalAnno
-  | Set.member n (freeVars t) =
-      Error.withLocation loc Error.occursCheck
-  | otherwise = return (Map.singleton n t)
+bind loc (n, origin) t =
+  case origin of
+    Annotated n' | not variable ->
+      Error.withLocation loc (Error.generalAnno n' t)
+    _ | Set.member n (freeVars t) ->
+      Error.withLocation loc (Error.occursCheck n t)
+    _ -> return (Map.singleton n t)
   where
     variable = case t of
       TVar _ -> True
