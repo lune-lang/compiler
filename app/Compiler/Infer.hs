@@ -185,7 +185,7 @@ freshVar origin = do
     rest (Cons _ ns) = ns
 
 inferType :: Expr -> Infer Type
-inferType (expr, loc, _) =
+inferType (expr, loc) =
   case expr of
     Int _ -> freshVar Inferred >>= numberType loc
     Float _ -> floatType loc
@@ -198,7 +198,7 @@ inferType (expr, loc, _) =
       maybe (Error.withLocation loc $ Error.notDefined n)
         (instantiate $ const Inferred) (Map.lookup n env)
 
-    DefIn n maybeAnno x1@(_, loc1, num) x2 ->
+    DefIn n maybeAnno x1@(_, loc1) x2 ->
       let
         getSubst t =
           case maybeAnno of
@@ -227,7 +227,7 @@ inferType (expr, loc, _) =
       t <- extendEnv (Unqualified n) (Forall [] var) (inferType x)
       functionType loc var t
 
-    Call x1@(_, loc1, _) x2@(_, loc2, num) -> do
+    Call x1@(_, loc1) x2@(_, loc2) -> do
       t1 <- inferType x1
       t2 <- inferType x2
       var <- freshVar Inferred
@@ -254,13 +254,6 @@ unifies cons loc = curry \case
     return (compose s2 s1)
 
   (t1, t2) -> Error.withLocation loc (Error.unification t1 t2)
-
-unifiesDelay :: Maybe Identifier -> Location -> (Type, Int) -> Type -> Type -> Infer Subst
-unifiesDelay cons loc (alt, num) t1 t2 =
-  unifies cons loc t1 t2 `Except.catchError` \e -> do
-    let withE = Except.withExceptT (const e)
-    Writer.tell [num]
-    withE (unifies cons loc alt t2)
 
 rowGet :: Identifier -> Location -> Type -> Type -> Infer (Type, Type)
 rowGet cons loc label = \case
@@ -342,7 +335,7 @@ checkKind k = \case
 checkFuncs :: [(Identifier, Maybe D.Scheme, Expr, Location)] -> Infer ()
 checkFuncs = \case
   [] -> return ()
-  (n, maybeAnno, x@(_, loc, num), _) : fs ->
+  (n, maybeAnno, x@(_, loc), _) : fs ->
     let
       getSubst t =
         case maybeAnno of
