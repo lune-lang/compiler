@@ -101,11 +101,6 @@ instance Substitutable a => Substitutable (Map k a) where
   apply s = fmap (apply s)
   freeVars = foldMap freeVars
 
-data UnifyMode
-  = NoAlts
-  | DelayAlt Type Int
-  | BothAlts Type Int Type Int
-
 type Constraint = (Location, Type, Type)
 
 data Stream a = Cons a (Stream a)
