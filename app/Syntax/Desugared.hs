@@ -28,7 +28,7 @@ data SimpleExpr
   | Lambda Name Expr
   | Call Expr Expr
 
-type Expr = (SimpleExpr, Location, Int)
+type Expr = (SimpleExpr, Location)
 
 data SimpleType
   = TCon Identifier

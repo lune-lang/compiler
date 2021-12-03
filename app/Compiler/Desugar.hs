@@ -24,7 +24,7 @@ import qualified Control.Monad.Except as Except
 import qualified Control.Monad.Reader as Reader
 import qualified Control.Monad.State as State
 import Control.Monad.Except (ExceptT)
-import Control.Monad.Reader (ReaderT)
+import Control.Monad.Reader (Reader)
 import Control.Monad.State (State)
 
 import qualified Compiler.Error as Error
@@ -64,13 +64,7 @@ instance Semigroup VarMap where
 emptyVars :: VarMap
 emptyVars = VarMap Map.empty Map.empty
 
-type Desugar = ExceptT Error.Msg (ReaderT (Map Role Identifier, VarMap) (State Int))
-
-makeId :: Desugar Int
-makeId = do
-  x <- State.get
-  State.modify (+1)
-  return x
+type Desugar = ExceptT Error.Msg (Reader (Map Role Identifier, VarMap))
 
 type Insert a b = a -> b -> Desugar a
 
@@ -345,7 +339,7 @@ instance Variable Identifier where
   unqualified = Unqualified
 
 freeVars :: Variable a => Expr -> Set a
-freeVars (expr, _, _) =
+freeVars (expr, _) =
   case expr of
     Int _ -> Set.empty
     Float _ -> Set.empty
@@ -441,11 +435,11 @@ variableNames (expr, _) =
 desugarExpr :: F.Expr -> Desugar Expr
 desugarExpr (expr, loc) =
   case expr of
-    F.Int x -> withId (Int x)
-    F.Float x -> withId (Float x)
-    F.Char x -> withId (Char x)
-    F.String x -> withId (String x)
-    F.Label x -> withId (Label x)
+    F.Int x -> withLoc (Int x)
+    F.Float x -> withLoc (Float x)
+    F.Char x -> withLoc (Char x)
+    F.String x -> withLoc (String x)
+    F.Label x -> withLoc (Label x)
 
     F.Identifier name -> ifDefined name id
 
@@ -455,8 +449,7 @@ desugarExpr (expr, loc) =
       case Map.lookup NegateFunction syntax of
         Nothing -> Error.withLocation loc Error.negateFunction
         Just name | name `elem` Lens.view valueSubs vars -> do
-          id1 <- makeId
-          withId $ Call (Identifier name, loc, id1) value'
+          withLoc $ Call (Identifier name, loc) value'
         Just name -> Error.withLocation loc (Error.notDefined name)
 
     F.Operator name Nothing Nothing ->
@@ -464,51 +457,43 @@ desugarExpr (expr, loc) =
 
     F.Operator name (Just x) Nothing -> do
       x' <- desugarExpr x
-      id1 <- makeId
       ifDefined (Unqualified name)
-        \sub -> Call (sub, loc, id1) x'
+        \sub -> Call (sub, loc) x'
 
     F.Operator name Nothing (Just x) -> do
       x' <- desugarExpr x
-      id1 <- makeId
-      id2 <- makeId
-      id3 <- makeId
-      id4 <- makeId
       ifDefined (Unqualified name)
         \sub -> Lambda safeVar
-          (Call (Call (sub, loc, id1) (varRef, loc, id2), loc, id3)
-            x', loc, id4)
+          (Call (Call (sub, loc) (varRef, loc), loc) x', loc)
 
     F.Operator name (Just x) (Just y) -> do
       x' <- desugarExpr x
       y' <- desugarExpr y
-      id1 <- makeId
-      id2 <- makeId
       ifDefined (Unqualified name)
-        \sub -> Call (Call (sub, loc, id1) x', loc, id2) y'
+        \sub -> Call (Call (sub, loc) x', loc) y'
 
     F.DefIn defs body -> do
       local <- Monad.foldM insertLocalDef emptyVars defs
       Reader.local (Bf.second (local <>)) do
         defs' <- desugarLocalDefs defs
         body' <- desugarExpr body
-        let defIn (n, a, b, _) x = withId (DefIn n a b x)
+        let defIn (n, a, b, _) x = withLoc (DefIn n a b x)
         Fold.foldrM defIn body' defs'
 
     F.Lambda args body -> do
       local <- Monad.foldM insertLocalValue emptyVars $ zip args (repeat loc)
       Reader.local (Bf.second (local <>)) do
         body' <- desugarExpr body
-        let lambda n x = withId (Lambda n x)
+        let lambda n x = withLoc (Lambda n x)
         Fold.foldrM lambda body' args
 
     F.Call func arg -> do
       func' <- desugarExpr func
       arg' <- desugarExpr arg
-      withId (Call func' arg')
+      withLoc (Call func' arg')
 
     where
-      withId x = (x, loc,) <$> makeId
+      withLoc x = return (x, loc)
 
       safeVar =
         [1..] >>= flip Monad.replicateM ['a'..'z']
@@ -521,7 +506,7 @@ desugarExpr (expr, loc) =
         vars <- Reader.asks snd
         case Map.lookup name (Lens.view valueSubs vars) of
           Nothing -> Error.withLocation loc (Error.notDefined name)
-          Just sub -> withId $ f (Identifier sub)
+          Just sub -> withLoc $ f (Identifier sub)
 
 desugarScheme :: F.Scheme -> Desugar Scheme
 desugarScheme (F.Forall as tipe) =
@@ -583,7 +568,7 @@ desugarModule interfaces modName m = do
 
 desugarModules :: Map ModName F.Module -> Either Error.Msg Module
 desugarModules modules =
-  State.evalState (Reader.runReaderT (Except.runExceptT desugar) (Map.empty, emptyVars)) 0
+  Reader.runReader (Except.runExceptT desugar) (Map.empty, emptyVars)
   where
     desugar = do
       interfaces <- sequence (Map.mapWithKey getInterface modules)
