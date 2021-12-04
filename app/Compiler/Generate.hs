@@ -164,8 +164,6 @@ genModule js m = concat
   , genIdentifier (Qualified "Main" "main"), "();"
   ]
   where
-    delay = Map.lookup DelayFunction (getSyntax m)
-
     foreignDefs =
       getForeigns m
       & fmap snd
