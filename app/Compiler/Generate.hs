@@ -84,7 +84,7 @@ makeValid name
       ]
 
 genExpr :: Expr -> String
-genExpr (expr, _, _) =
+genExpr (expr, _) =
   case expr of
     Int x -> show x
     Float x -> show x
@@ -154,24 +154,8 @@ genWrapper (Wrapper _ _ mk gt) =
       , " = function(x) { return x; }; "
       ]
 
-lazifyExpr :: Maybe Identifier -> [Int] -> Expr -> Expr
-lazifyExpr maybeDelay nums (expr, loc, num)
-  | num `elem` nums, Just delay <- maybeDelay =
-      ( Call (Identifier delay, loc, 0)
-          (Lambda "_" (lazify expr, loc, 0), loc, 0)
-      , loc, 0)
-  | otherwise = (lazify expr, loc, 0)
-  where
-    recurse = lazifyExpr maybeDelay nums
-
-    lazify = \case
-      DefIn n t x1 x2 -> DefIn n t (recurse x1) (recurse x2)
-      Lambda n x -> Lambda n (recurse x)
-      Call x1 x2 -> Call (recurse x1) (recurse x2)
-      x -> x
-
-genModule :: [Int] -> String -> Module -> String
-genModule nums js m = concat
+genModule :: String -> Module -> String
+genModule js m = concat
   [ concatMap genModuleDef (modNames m)
   , js
   , wrapperDefs
@@ -180,8 +164,6 @@ genModule nums js m = concat
   , genIdentifier (Qualified "Main" "main"), "();"
   ]
   where
-    delay = Map.lookup DelayFunction (getSyntax m)
-
     foreignDefs =
       getForeigns m
       & fmap snd
@@ -190,7 +172,7 @@ genModule nums js m = concat
 
     funcDefs =
       getFuncs m
-      & map (\(n, _, x, _) -> (n, lazifyExpr delay nums x))
+      & map (\(n, _, x, _) -> (n, x))
       & concatMap (uncurry genFunc)
 
     wrapperDefs =
