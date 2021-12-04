@@ -281,8 +281,7 @@ desugarDefs modName defs = do
 
         F.Syntax name role -> do
           (VarMap valueNames typeNames) <- Reader.asks snd
-          let functionRoles = [ NegateFunction, DelayFunction ]
-          let available = if role `elem` functionRoles then valueNames else typeNames
+          let available = if role == NegateFunction then valueNames else typeNames
           if Qualified modName name `notElem` available
             then Error.withLocation loc (Error.notDefined name)
             else return (annos, funcs, foreigns, types, synonyms)

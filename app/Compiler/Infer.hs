@@ -151,11 +151,6 @@ labelType loc n = do
   t <- specialType LabelType loc Error.labelType
   return $ TCall t (TLabel n)
 
-lazyType :: Infer (Maybe (Type -> Type))
-lazyType = do
-  n <- Map.lookup LazyType <$> Reader.asks (^. syntax)
-  return $ fmap (TCall . TCon) n
-
 rowCons :: Infer (Maybe Identifier)
 rowCons = Map.lookup RowConstructor <$> Reader.asks (^. syntax)
 
