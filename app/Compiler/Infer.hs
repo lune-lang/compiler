@@ -19,11 +19,10 @@ import Data.Set (Set, (\\))
 
 import qualified Control.Monad.Except as Except
 import qualified Control.Monad.Reader as Reader
-import qualified Control.Monad.Writer as Writer
 import qualified Control.Monad.State as State
-import qualified Control.Monad.RWS as RWS
 import Control.Monad.Except (ExceptT)
-import Control.Monad.RWS (RWS)
+import Control.Monad.Reader (ReaderT)
+import Control.Monad.State (State)
 
 import qualified Control.Lens as Lens
 import Control.Lens ((^.), (.~), (%~))
@@ -112,7 +111,7 @@ data InferState = InferState
 
 Lens.makeLenses ''InferState
 
-type InferWith e = ExceptT e (RWS Env [Int] InferState)
+type InferWith e = ExceptT e (ReaderT Env (State InferState))
 type Infer = InferWith Error.Msg
 
 extendEnv :: Identifier -> Scheme -> Infer a -> Infer a
@@ -475,12 +474,10 @@ wrapperEnv n (_, w) =
               Just gt -> Map.insert gt getterType makerEnv
         return (Env typeEnv Map.empty Map.empty Map.empty)
 
-checkModule :: Module -> Either Error.Msg [Int]
+checkModule :: Module -> Either Error.Msg ()
 checkModule (Module funcs foreigns types syns syntax) =
-  nums <$ result
+  State.evalState (Reader.runReaderT (Except.runExceptT check) env) state
   where
-    (result, _, nums) = RWS.runRWS (Except.runExceptT check) env state
-
     state = InferState [] (foldr Cons undefined fresh)
     env = Env Map.empty (fmap fst types) Map.empty syntax
 

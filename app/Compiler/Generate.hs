@@ -154,8 +154,8 @@ genWrapper (Wrapper _ _ mk gt) =
       , " = function(x) { return x; }; "
       ]
 
-genModule :: [Int] -> String -> Module -> String
-genModule nums js m = concat
+genModule :: String -> Module -> String
+genModule js m = concat
   [ concatMap genModuleDef (modNames m)
   , js
   , wrapperDefs

@@ -61,11 +61,11 @@ compile =
               putStrLn "Checking types..."
               case checkModule defs of
                 Left err -> print err
-                Right nums -> do
+                Right () -> do
                   putStrLn "Generating javascript..."
                   javascript <- mapM readFile jsPaths
                   putStrLn "Compiled into \"project.js\""
-                  writeFile "project.js" $ genModule nums (concat javascript) defs
+                  writeFile "project.js" $ genModule (concat javascript) defs
 
 type ModName = String
 
