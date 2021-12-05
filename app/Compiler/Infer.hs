@@ -394,7 +394,7 @@ wrapperEnv n (_, w) =
         return (Env typeEnv Map.empty Map.empty)
 
 checkModule :: Module -> Either Error.Msg ()
-checkModule (Module funcs foreigns types syns syntax) =
+checkModule (Module funcs _ foreigns types _ syntax) =
   State.evalState (Reader.runReaderT (Except.runExceptT check) env) state
   where
     state = InferState [] (foldr Cons undefined fresh)

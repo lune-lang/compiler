@@ -22,7 +22,7 @@ type ModName = String
 data Identifier
   = Qualified ModName Name
   | Unqualified Name
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 
 data Kind
   = KType

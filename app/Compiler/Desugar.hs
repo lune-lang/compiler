@@ -35,6 +35,8 @@ import Syntax.Common
 import qualified Control.Lens as Lens
 import Control.Lens ((^.))
 
+import Debug.Trace
+
 data Interface = Interface
   { _values :: [(Name, Location)]
   , _types :: [(Name, Location)]
@@ -87,6 +89,7 @@ insertDef exports interface (def, loc) =
   case def of
     F.Annotation _ _ -> return interface
     F.Func name _ _ -> valueDef interface (name, loc)
+    F.Expand name _ _ -> valueDef interface (name, loc)
     F.Foreign name _ _ -> valueDef interface (name, loc)
     F.Type name _ Nothing -> typeDef interface (name, loc)
     F.Type name _ (Just (F.Wrapper _ _ maker getter)) -> do
@@ -122,6 +125,7 @@ getExports m =
       case def of
         F.Annotation _ _ -> []
         F.Func name _ _ -> [F.ValuePort name]
+        F.Expand name _ _ -> [F.ValuePort name]
         F.Foreign name _ _ -> [F.ValuePort name]
         F.Type name _ Nothing -> [F.TypePort name]
         F.Type name _ (Just (F.Wrapper _ _ maker getter)) ->
@@ -197,6 +201,7 @@ insertTopLevelDef modName vars (def, loc) =
   case def of
     F.Annotation _ _ -> return vars
     F.Func name _ _ -> addValue vars (name, loc)
+    F.Expand name _ _ -> addValue vars (name, loc)
     F.Foreign name _ _ -> addValue vars (name, loc)
     F.Type name _ Nothing -> addType vars (name, loc)
     F.Type name _ (Just (F.Wrapper _ _ maker getter)) -> do
@@ -234,42 +239,50 @@ separateSyntax = Map.mapWithKey separate
 
 desugarDefs :: ModName -> [F.Def] -> Desugar Module
 desugarDefs modName defs = do
-  (annos, funcs, foreigns, types, synonyms) <-
-    Monad.foldM addDef (Map.empty, [], Map.empty, Map.empty, []) defs
+  (annos, funcs, expands, foreigns, types, synonyms) <-
+    Monad.foldM addDef (Map.empty, [], [], Map.empty, Map.empty, []) defs
   let funcNames = map (\(n, _, _) -> n) funcs
   let foreignNames = map fst (Map.keys foreigns)
   mapM_ (existsAnno $ funcNames ++ foreignNames) (Map.keys annos)
   let funcs' = mergeAnnos annos funcs
   foreigns' <- mergeForeignAnnos annos foreigns
   syntax <- Reader.asks (separateSyntax . fst)
-  return (Module funcs' foreigns' types synonyms syntax)
+  return (Module funcs' expands foreigns' types synonyms syntax)
   where
-    addDef (annos, funcs, foreigns, types, synonyms) (def, loc) =
+    addDef (annos, funcs, expands, foreigns, types, synonyms) (def, loc) =
       case def of
         F.Annotation names tipe -> do
           let names' = map (Qualified modName) names
           tipe' <- Error.annoContext names' (desugarScheme tipe)
           let keys = zip names' (repeat loc)
           let newAnnos = Map.fromList (zip keys $ repeat tipe') <> annos
-          return (newAnnos, funcs, foreigns, types, synonyms)
+          return (newAnnos, funcs, expands, foreigns, types, synonyms)
 
         F.Func name args body@(_, bodyLoc) -> do
           let name' = Qualified modName name
           body' <- Error.defContext name' $
             desugarExpr (F.Lambda args body, bodyLoc)
           let newFuncs = (name', body', loc) : funcs
-          return (annos, newFuncs, foreigns, types, synonyms)
+          return (annos, newFuncs, expands, foreigns, types, synonyms)
+
+        F.Expand name args body -> do
+          let name' = Qualified modName name
+          local <- Monad.foldM insertLocalValue emptyVars $ zip args (repeat loc)
+          body' <- Error.defContext name' $
+            Reader.local (Bf.second (local <>)) (desugarExpr body)
+          let newExpands = (name', args, body', loc) : expands
+          return (annos, funcs, newExpands, foreigns, types, synonyms)
 
         F.Foreign name args js -> do
           let name' = Qualified modName name
           let js' = makeJavascript args js
           let newForeigns = Map.insert (name', loc) js' foreigns
-          return (annos, funcs, newForeigns, types, synonyms)
+          return (annos, funcs, expands, newForeigns, types, synonyms)
 
         F.Type name kind Nothing -> do
           let name' = Qualified modName name
           let newTypes = Map.insert name' (kind, Nothing) types
-          return (annos, funcs, foreigns, newTypes, synonyms)
+          return (annos, funcs, expands, foreigns, newTypes, synonyms)
 
         F.Type name kind (Just (F.Wrapper args tipe maker getter)) -> do
           let name' = Qualified modName name
@@ -277,22 +290,22 @@ desugarDefs modName defs = do
           let maker' = Qualified modName (fst maker)
           let getter' = fmap (Qualified modName . fst) getter
           let newTypes = Map.insert name' (kind, Just (Wrapper args tipe' maker' getter')) types
-          return (annos, funcs, foreigns, newTypes, synonyms)
+          return (annos, funcs, expands, foreigns, newTypes, synonyms)
 
         F.Synonym name args tipe -> do
           let name' = Qualified modName name
           tipe' <- Error.defContext name' (desugarType args tipe)
           let newSynonyms = (name', args, tipe', loc) : synonyms
-          return (annos, funcs, foreigns, types, newSynonyms)
+          return (annos, funcs, expands, foreigns, types, newSynonyms)
 
-        F.Infix _ -> return (annos, funcs, foreigns, types, synonyms)
+        F.Infix _ -> return (annos, funcs, expands, foreigns, types, synonyms)
 
         F.Syntax name role -> do
           (VarMap valueNames typeNames) <- Reader.asks snd
           let available = if role == NegateFunction then valueNames else typeNames
           if Qualified modName name `notElem` available
             then Error.withLocation loc (Error.notDefined name)
-            else return (annos, funcs, foreigns, types, synonyms)
+            else return (annos, funcs, expands, foreigns, types, synonyms)
 
 desugarLocalDefs :: [F.LocalDef] -> Desugar [(Name, Maybe Scheme, Expr, Location)]
 desugarLocalDefs defs = do
@@ -393,14 +406,14 @@ freeCons (tipe, _) =
     TLabel _ -> Set.empty
     TCall func arg -> freeCons func <> freeCons arg
 
-arrangeSynonyms :: [(Identifier, [Name], Type, Location)] -> Desugar [(Identifier, [Name], Type, Location)]
-arrangeSynonyms syns = do
+arrangeSynonyms :: (a -> Set Identifier) -> [(Identifier, [Name], a, Location)] -> Desugar [(Identifier, [Name], a, Location)]
+arrangeSynonyms free syns = do
   order <- getSynonymOrder referenceMap
   let position name = Maybe.fromMaybe 0 (List.elemIndex name order)
   return $ List.sortOn (position . nameOf) syns
   where
     nameOf (n, _, _, _) = n
-    cons = Set.filter (`elem` map nameOf syns) . freeCons
+    cons = Set.filter (`elem` map nameOf syns) . free
     removeArgs = map (\(n, _, t, loc) -> (n, (t, loc)))
     referenceMap =
       map (Bf.second $ Bf.first cons) (removeArgs syns)
@@ -584,10 +597,11 @@ desugarModules modules =
       syntax <- getSyntaxMap (fmap F.getDefs modules)
       modules' <- Reader.local (Bf.first $ const syntax) $
         sequence $ Map.mapWithKey (desugarModule interfaces) modules
-      let Module funcs foreigns types synonyms syntax = Fold.fold modules'
+      let Module funcs expands foreigns types synonyms syntax = Fold.fold modules'
       funcs' <- arrange funcs
-      synonyms' <- arrangeSynonyms synonyms
-      return (Module funcs' foreigns types synonyms' syntax)
+      expands' <- arrangeSynonyms freeVars expands
+      synonyms' <- arrangeSynonyms freeCons synonyms
+      return (Module funcs' expands' foreigns types synonyms' syntax)
 
 hasMain :: Map ModName Interface -> Desugar ()
 hasMain interfaces =
