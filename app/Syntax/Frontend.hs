@@ -59,6 +59,7 @@ data SimpleDef
   = Annotation [Name] Scheme
   | Func Name [Name] Expr
   | Foreign Name [Name] String
+  | Expand Name [Name] Expr
   | Type Name Kind (Maybe Wrapper)
   | Synonym Name [Name] Type
   | Infix Name
