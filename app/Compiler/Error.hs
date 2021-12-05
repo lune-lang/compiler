@@ -29,7 +29,8 @@ module Compiler.Error
   , noMainFunction
   , mutualRecursion
   , synonymRecursion
-  , partialApplication
+  , partialExpand
+  , partialSynonym
   , kindInference
   , kindCheck
   , typeVariables
@@ -176,10 +177,14 @@ mutualRecursion = Except.throwError
 
 synonymRecursion :: (MonadError String m) => m b
 synonymRecursion = Except.throwError
-  "type synonym is recursive"
+  "type synonym or expression synonym is recursive"
 
-partialApplication :: (NameError a, MonadError String m) => a -> m b
-partialApplication n = Except.throwError $
+partialExpand :: (NameError a, MonadError String m) => a -> m b
+partialExpand n = Except.throwError $
+  "expression synonym" ++ err n ++ " is partially applied"
+
+partialSynonym :: (NameError a, MonadError String m) => a -> m b
+partialSynonym n = Except.throwError $
   "type synonym " ++ err n ++ " is partially applied"
 
 kindInference :: (NameError a, MonadError String m) => a -> m b

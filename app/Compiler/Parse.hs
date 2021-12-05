@@ -51,6 +51,7 @@ lexerStyle = Token.LanguageDef
       , "in"
       , "val"
       , "let"
+      , "expand"
       , "type"
       , "where"
       , "with"
@@ -302,6 +303,15 @@ parseFunc func = do
   body <- parseExpr
   return (func name args body)
 
+parseExpand :: Parser SimpleDef
+parseExpand = do
+  reserved "expand"
+  name <- nameOrOperator
+  args <- Parsec.many identifierLower
+  reservedOp "="
+  body <- parseExpr
+  return (Expand name args body)
+
 parseTypeDef :: Parser SimpleDef
 parseTypeDef = do
   reserved "type"
@@ -391,6 +401,7 @@ parseDef = do
   def <-
     parseAnnotation Annotation <|>
     parseFunc Func <|>
+    parseExpand <|>
     parseTypeDef <|>
     parseForeign <|>
     parseInfix <|>
