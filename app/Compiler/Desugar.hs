@@ -33,6 +33,7 @@ import Syntax.Desugared
 import Syntax.Common
 
 import qualified Control.Lens as Lens
+import Control.Lens ((^.))
 
 data Interface = Interface
   { _values :: [(Name, Location)]
@@ -64,7 +65,8 @@ instance Semigroup VarMap where
 emptyVars :: VarMap
 emptyVars = VarMap Map.empty Map.empty
 
-type Desugar = ExceptT Error.Msg (Reader (Map Role Identifier, VarMap))
+type SyntaxMap = Map Role (Identifier, Location)
+type Desugar = ExceptT Error.Msg (Reader (SyntaxMap, VarMap))
 
 type Insert a b = a -> b -> Desugar a
 
@@ -136,13 +138,13 @@ getInterface modName m = do
 
 insertValueSub :: Location -> Insert VarMap (Identifier, Identifier)
 insertValueSub loc vars (name, sub) =
-  if Map.member name (Lens.view valueSubs vars)
+  if Map.member name (vars ^. valueSubs)
     then Error.withLocation loc (Error.multipleDef name)
     else return $ Lens.over valueSubs (Map.insert name sub) vars
 
 insertTypeSub :: Location -> Insert VarMap (Identifier, Identifier)
 insertTypeSub loc vars (name, sub) =
-  if Map.member name (Lens.view typeSubs vars)
+  if Map.member name (vars ^. typeSubs)
     then Error.withLocation loc (Error.multipleDef name)
     else return $ Lens.over typeSubs (Map.insert name sub) vars
 
@@ -224,6 +226,12 @@ makeJavascript args body =
       , "; }"
       ]
 
+separateSyntax :: Map Role (Identifier, Location) -> Map Role (Either Type Expr)
+separateSyntax = Map.mapWithKey separate
+  where
+    separate NegateFunction (name, loc) = Right (Identifier name, loc)
+    separate _ (name, loc) = Left (TCon name, loc)
+
 desugarDefs :: ModName -> [F.Def] -> Desugar Module
 desugarDefs modName defs = do
   (annos, funcs, foreigns, types, synonyms) <-
@@ -233,7 +241,7 @@ desugarDefs modName defs = do
   mapM_ (existsAnno $ funcNames ++ foreignNames) (Map.keys annos)
   let funcs' = mergeAnnos annos funcs
   foreigns' <- mergeForeignAnnos annos foreigns
-  syntax <- Reader.asks fst
+  syntax <- Reader.asks (separateSyntax . fst)
   return (Module funcs' foreigns' types synonyms syntax)
   where
     addDef (annos, funcs, foreigns, types, synonyms) (def, loc) =
@@ -447,9 +455,9 @@ desugarExpr (expr, loc) =
       value' <- desugarExpr value
       case Map.lookup NegateFunction syntax of
         Nothing -> Error.withLocation loc Error.negateFunction
-        Just name | name `elem` Lens.view valueSubs vars -> do
+        Just (name, _) | name `elem` vars ^. valueSubs -> do
           withLoc $ Call (Identifier name, loc) value'
-        Just name -> Error.withLocation loc (Error.notDefined name)
+        Just (name, _) -> Error.withLocation loc (Error.notDefined name)
 
     F.Operator name Nothing Nothing ->
       ifDefined (Unqualified name) id
@@ -503,7 +511,7 @@ desugarExpr (expr, loc) =
 
       ifDefined name f = do
         vars <- Reader.asks snd
-        case Map.lookup name (Lens.view valueSubs vars) of
+        case Map.lookup name (vars ^. valueSubs) of
           Nothing -> Error.withLocation loc (Error.notDefined name)
           Just sub -> withLoc $ f (Identifier sub)
 
@@ -532,18 +540,18 @@ desugarType as (tipe, loc) =
       row' <- desugarType as row
       case Map.lookup CurlyBrackets syntax of
         Nothing -> Error.withLocation loc Error.curlyBrackets
-        Just name | name `elem` Lens.view typeSubs vars -> do
+        Just (name, _) | name `elem` vars ^. typeSubs -> do
           return (TCall (TCon name, loc) row', loc)
-        Just name -> Error.withLocation loc (Error.notDefined name)
+        Just (name, _) -> Error.withLocation loc (Error.notDefined name)
 
     F.TVariant row -> do
       (syntax, vars) <- Reader.ask
       row' <- desugarType as row
       case Map.lookup SquareBrackets syntax of
         Nothing -> Error.withLocation loc Error.squareBrackets
-        Just name | name `elem` Lens.view typeSubs vars -> do
+        Just (name, _) | name `elem` vars ^. typeSubs -> do
           return (TCall (TCon name, loc) row', loc)
-        Just name -> Error.withLocation loc (Error.notDefined name)
+        Just (name, _) -> Error.withLocation loc (Error.notDefined name)
 
     F.TCall func arg -> do
       func' <- desugarType as func
@@ -553,7 +561,7 @@ desugarType as (tipe, loc) =
   where
     ifDefined name f = do
       vars <- Reader.asks snd
-      case Map.lookup name (Lens.view typeSubs vars) of
+      case Map.lookup name (vars ^. typeSubs) of
         Nothing -> Error.withLocation loc (Error.notDefined name)
         Just sub -> return (f $ TCon sub, loc)
 
@@ -599,7 +607,7 @@ noRepeatedInfix =
           | otherwise -> return (name : ops)
         _ -> return ops :: Desugar [Name]
 
-getSyntaxMap :: Map ModName [F.Def] -> Desugar (Map Role Identifier)
+getSyntaxMap :: Map ModName [F.Def] -> Desugar SyntaxMap
 getSyntaxMap modules = do
   (roles, syntax) <- Monad.foldM addSyntax ([], Map.empty) defs
   return syntax
@@ -613,5 +621,5 @@ getSyntaxMap modules = do
           let name' = Qualified modName name in
           if role `elem` roles
             then Error.withLocation loc (Error.conflictingSyntax name')
-            else return (role : roles, Map.insert role name' syntax)
+            else return (role : roles, Map.insert role (name', loc) syntax)
         _ -> return (roles, syntax)

@@ -48,7 +48,7 @@ data Module = Module
   , getForeigns :: Map Identifier (Scheme, String)
   , getTypes :: Map Identifier (Kind, Maybe Wrapper)
   , getSynonyms :: [(Identifier, [Name], Type, Location)]
-  , getSyntax :: Map Role Identifier
+  , getSyntax :: Map Role (Either Type Expr)
   }
 
 instance Semigroup Module where

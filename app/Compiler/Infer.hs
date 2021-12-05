@@ -33,8 +33,6 @@ import Syntax.Common
 import Syntax.Desugared (SimpleExpr(..), Expr, Wrapper(..), Module(..))
 import Syntax.Inferred
 
-import Debug.Trace
-
 convertType :: D.Type -> Type
 convertType (tipe, _) =
   case tipe of
@@ -52,18 +50,17 @@ pattern TCall3 t1 t2 t3 t4 = TCall (TCall2 t1 t2 t3) t4
 data Env = Env
   { _typeEnv :: Map Identifier Scheme
   , _kindEnv :: Map Identifier Kind
-  , _synonyms :: Map Identifier ([Name], D.Type)
-  , _syntax :: Map Role Identifier
+  , _syntax :: Map Role (Either Type Expr)
   }
 
 Lens.makeLenses ''Env
 
 instance Semigroup Env where
-  Env t1 k1 s1 x1 <> Env t2 k2 s2 x2 =
-    Env (t1 <> t2) (k1 <> k2) (s1 <> s2) (x1 <> x2)
+  Env t1 k1 s1 <> Env t2 k2 s2 =
+    Env (t1 <> t2) (k1 <> k2) (s1 <> s2)
 
 instance Monoid Env where
-  mempty = Env Map.empty Map.empty Map.empty Map.empty
+  mempty = Env Map.empty Map.empty Map.empty
 
 type Subst = Map Name Type
 
@@ -124,8 +121,8 @@ specialType :: Role -> Location -> InferWith String Type -> Infer Type
 specialType role loc err = do
   special <- Reader.asks (^. syntax)
   case Map.lookup role special of
-    Nothing -> Error.withLocation loc err
-    Just n -> convertType <$> unaliasType (D.TCon n, loc)
+    Just (Left t) -> return t
+    _ -> Error.withLocation loc err
 
 functionType :: Location -> Type -> Type -> Infer Type
 functionType loc t1 t2 = do
@@ -151,8 +148,12 @@ labelType loc n = do
   t <- specialType LabelType loc Error.labelType
   return $ TCall t (TLabel n)
 
-rowCons :: Infer (Maybe Identifier)
-rowCons = Map.lookup RowConstructor <$> Reader.asks (^. syntax)
+rowCons :: Infer (Maybe Type)
+rowCons = do
+  special <- Reader.asks (^. syntax)
+  case Map.lookup RowConstructor special of
+    Just (Left t) -> return (Just t)
+    _ -> return Nothing
 
 instantiate :: (Name -> Origin) -> Scheme -> Infer Type
 instantiate origin (Forall vs t) = do
@@ -198,7 +199,7 @@ inferType (expr, loc) =
           case maybeAnno of
             Nothing -> solve
             Just anno@(D.Forall _ (_, annoLoc)) -> do
-              anno' <- instantiate Annotated . convertScheme =<< unaliasScheme anno
+              anno' <- instantiate Annotated (convertScheme anno)
               unify loc1 t anno'
               s <- solve
               equivalent annoLoc anno' (apply s anno')
@@ -229,14 +230,14 @@ inferType (expr, loc) =
       unify loc2 tf t1
       return var
 
-unifies :: Maybe Identifier -> Location -> Type -> Type -> Infer Subst
+unifies :: Maybe Type -> Location -> Type -> Type -> Infer Subst
 unifies cons loc = curry \case
   (t1, t2) | t1 == t2 -> return nullSubst
 
   (TVar n, t) -> bind loc n t
   (t, TVar n) -> bind loc n t
 
-  (TCall3 (TCon n) l v1 r1, t2) | Just cons' <- cons, n == cons' -> do
+  (TCall3 n l v1 r1, t2) | Just cons' <- cons, n == cons' -> do
       (v2, r2) <- rowGet cons' loc l t2
       s1 <- unifies cons loc v1 v2
       s2 <- unifies cons loc (apply s1 r1) (apply s1 r2)
@@ -249,11 +250,11 @@ unifies cons loc = curry \case
 
   (t1, t2) -> Error.withLocation loc (Error.unification t1 t2)
 
-rowGet :: Identifier -> Location -> Type -> Type -> Infer (Type, Type)
+rowGet :: Type -> Location -> Type -> Type -> Infer (Type, Type)
 rowGet cons loc label = \case
-  (TCall3 (TCon n) l v r) | n == cons ->
+  (TCall3 n l v r) | n == cons ->
     if l == label then return (v, r)
-    else Bf.second (TCall3 (TCon n) l v) <$> rowGet cons loc label r
+    else Bf.second (TCall3 n l v) <$> rowGet cons loc label r
 
   TVar (_, origin) -> (,) <$> freshVar origin <*> freshVar origin
 
@@ -335,7 +336,7 @@ checkFuncs = \case
         case maybeAnno of
           Nothing -> solve
           Just anno@(D.Forall _ (_, annoLoc)) -> do
-            anno' <- instantiate Annotated . convertScheme =<< unaliasScheme anno
+            anno' <- instantiate Annotated (convertScheme anno)
             unify loc t anno'
             s <- solve
             equivalent annoLoc anno' (apply s anno')
@@ -369,82 +370,6 @@ equivalent loc t1 t2 =
       Set.size (Set.map fst pairs) < Set.size pairs ||
       Set.size (Set.map snd pairs) < Set.size pairs
 
-applyDesugared :: Map Name D.Type -> D.Type -> D.Type
-applyDesugared s (tipe, loc) =
-  case tipe of
-    D.TCon n -> (D.TCon n, loc)
-    D.TLabel n -> (D.TLabel n, loc)
-    D.TVar n -> Maybe.fromMaybe (D.TVar n, loc) (Map.lookup n s)
-    D.TCall t1 t2 ->
-      let
-        t1' = applyDesugared s t1
-        t2' = applyDesugared s t2
-      in
-      (D.TCall t1' t2', loc)
-
-unaliasType :: D.Type -> Infer D.Type
-unaliasType t = do
-  syns <- Reader.asks (^. synonyms)
-  case getFunc t of
-    Nothing -> keepLooking
-    Just (n, loc) ->
-      case Map.lookup n syns of
-        Nothing -> keepLooking
-        Just (as, t2) ->
-          case compare (length as) (length args) of
-            LT -> keepLooking
-            GT -> Error.withLocation loc (Error.partialApplication n)
-            EQ -> do
-              args' <- mapM unaliasType args
-              return $ applyDesugared (Map.fromList $ zip as args') t2
-
-  where
-    args = getArgs t
-    keepLooking =
-      case fst t of
-        D.TCon _ -> return t
-        D.TLabel _ -> return t
-        D.TVar _ -> return t
-        D.TCall t1 t2 -> do
-          t1' <- unaliasType t1
-          t2' <- unaliasType t2
-          return (D.TCall t1' t2', snd t)
-
-unaliasScheme :: D.Scheme -> Infer D.Scheme
-unaliasScheme (D.Forall vs t) = D.Forall vs <$> unaliasType t
-
-getFunc :: D.Type -> Maybe (Identifier, Location)
-getFunc (tipe, loc) =
-  case tipe of
-    D.TCon n -> Just (n, loc)
-    D.TLabel _ -> Nothing
-    D.TVar _ -> Nothing
-    D.TCall t1 _ -> getFunc t1
-
-getArgs :: D.Type -> [D.Type]
-getArgs (tipe, _) =
-  case tipe of
-    D.TCon _ -> []
-    D.TLabel _ -> []
-    D.TVar _ -> []
-    D.TCall t1 t2 -> getArgs t1 ++ [t2]
-
-synonymMap :: [(Identifier, [Name], D.Type, Location)] -> Infer (Map Identifier ([Name], D.Type))
-synonymMap = Fold.foldrM addSynonym Map.empty
-
-addSynonym :: (Identifier, [Name], D.Type, Location) -> Map Identifier ([Name], D.Type) -> Infer (Map Identifier ([Name], D.Type))
-addSynonym (n, as, t, _) syns = do
-  Error.defContext n do
-    syns' <- withSyn $ mapM (secondM unaliasType) syns
-    return (syn <> syns')
-  where
-    syn = Map.singleton n (as, t)
-    withSyn = Reader.local (synonyms .~ syn)
-
-    secondM f (x, y) = do
-      y' <- f y
-      return (x, y')
-
 wrapperEnv :: Identifier -> (Kind, Maybe Wrapper) -> Infer Env
 wrapperEnv n (_, w) =
   case w of
@@ -456,42 +381,38 @@ wrapperEnv n (_, w) =
           & foldl (\t1 t2 -> (D.TCall t1 t2, loc)) (D.TCon n, loc)
       in
       Error.defContext n do
-        unwrapped <- unaliasType t
         checkKind KType wrapped
-        checkKind KType unwrapped
+        checkKind KType t
         let wrapped' = convertType wrapped
-        let unwrapped' = convertType unwrapped
-        makerType <- Forall vs <$> functionType loc unwrapped' wrapped'
-        getterType <- Forall vs <$> functionType loc wrapped' unwrapped'
+        let t' = convertType t
+        makerType <- Forall vs <$> functionType loc t' wrapped'
+        getterType <- Forall vs <$> functionType loc wrapped' t'
         let makerEnv = Map.singleton maker makerType
         let typeEnv = case getter of
               Nothing -> makerEnv
               Just gt -> Map.insert gt getterType makerEnv
-        return (Env typeEnv Map.empty Map.empty Map.empty)
+        return (Env typeEnv Map.empty Map.empty)
 
 checkModule :: Module -> Either Error.Msg ()
 checkModule (Module funcs foreigns types syns syntax) =
   State.evalState (Reader.runReaderT (Except.runExceptT check) env) state
   where
     state = InferState [] (foldr Cons undefined fresh)
-    env = Env Map.empty (fmap fst types) Map.empty syntax
+
+    envTypes = fmap (convertScheme . fst) foreigns
+    envKinds = fmap fst types
+    envSyntax = fmap (Bf.first convertType) syntax
+    env = Env envTypes envKinds envSyntax
 
     prefixes = map (:[]) ['a'..'z']
     numbers = concatMap (replicate $ length prefixes) [0..]
     fresh = zipWith (++) (cycle prefixes) (map show numbers)
 
-    unaliasForeign n (t, _) =
-      Error.defContext n (unaliasScheme t)
-
-    checkForeign n (D.Forall _ t) =
+    checkForeign n (D.Forall _ t, _) =
       Error.defContext n $ Monad.void (checkKind KType t)
 
     check = do
-      syns' <- synonymMap syns
-      Reader.local (synonyms .~ syns') do
-        foreigns' <- sequence (Map.mapWithKey unaliasForeign foreigns)
-        let foreignE = Env (fmap convertScheme foreigns') Map.empty Map.empty Map.empty
-        wrapperE <- Fold.fold <$> sequence (Map.mapWithKey wrapperEnv types)
-        Reader.local ((foreignE <> wrapperE) <>) do
-          sequence_ (Map.mapWithKey checkForeign foreigns')
-          checkFuncs funcs
+      wrapperE <- Fold.fold <$> sequence (Map.mapWithKey wrapperEnv types)
+      Reader.local (wrapperE <>) do
+        sequence_ (Map.mapWithKey checkForeign foreigns)
+        checkFuncs funcs
