@@ -14,6 +14,7 @@ import qualified System.Directory.Internal.Prelude as Pre
 
 import Compiler.Parse (parseFiles)
 import Compiler.Desugar (desugarModules)
+import Compiler.Unalias (unaliasModule)
 import Compiler.Infer (checkModule)
 import Compiler.Generate (genModule)
 
@@ -58,14 +59,18 @@ compile =
           case desugarModules $ Map.fromList (zip modNames modules) of
             Left err -> print err
             Right defs -> do
-              putStrLn "Checking types..."
-              case checkModule defs of
+              putStrLn "Expanding synonyms..."
+              case unaliasModule defs of
                 Left err -> print err
-                Right () -> do
-                  putStrLn "Generating javascript..."
-                  javascript <- mapM readFile jsPaths
-                  putStrLn "Compiled into \"project.js\""
-                  writeFile "project.js" $ genModule (concat javascript) defs
+                Right defs' -> do
+                  putStrLn "Checking types..."
+                  case checkModule defs' of
+                    Left err -> print err
+                    Right () -> do
+                      putStrLn "Generating javascript..."
+                      javascript <- concat <$> mapM readFile jsPaths
+                      writeFile "project.js" (genModule javascript defs')
+                      putStrLn "Compiled into \"project.js\""
 
 type ModName = String
 

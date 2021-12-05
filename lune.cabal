@@ -31,6 +31,7 @@ executable lune
                       Syntax.Common,
                       Compiler.Parse,
                       Compiler.Desugar,
+                      Compiler.Unalias,
                       Compiler.Infer,
                       Compiler.Generate,
                       Compiler.Error
