@@ -191,11 +191,11 @@ expandMap = Fold.foldrM addExpand Map.empty
 addExpand :: (Identifier, [Name], Expr, Location) -> Expands -> Unalias Expands
 addExpand (name, vars, expr, _) expands =
   Error.defContext name do
-    let exp = Map.singleton name (vars, expr)
-    let withExp = Reader.local $ Bf.first (const exp)
+    let exd = Map.singleton name (vars, expr)
+    let withExp = Reader.local $ Bf.first (const exd)
     let secondM f (x, y) = (x, ) <$> f y
     expands' <- withExp $ mapM (secondM unaliasExpr) expands
-    return (exp <> expands')
+    return (exd <> expands')
 
 synonymMap :: [(Identifier, [Name], Type, Location)] -> Unalias Synonyms
 synonymMap = Fold.foldrM addSynonym Map.empty

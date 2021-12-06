@@ -8,9 +8,6 @@ module Compiler.Parse (parseFiles) where
 import qualified Text.Read as Read
 import qualified Data.Char as Char
 import qualified Data.List as List
-import qualified Data.Maybe as Maybe
-import qualified Data.Bifunctor as Bf
-import qualified Control.Applicative as Ap
 import qualified Control.Monad as Monad
 import Data.Functor.Identity (Identity)
 
@@ -69,10 +66,20 @@ lexerStyle = Token.LanguageDef
 lexer :: Token.TokenParser OpTable
 lexer = Token.makeTokenParser lexerStyle
 
+identifier, operator :: Parser String
+reserved, reservedOp :: String -> Parser ()
+natural :: Parser Integer
+naturalOrFloat :: Parser (Either Integer Double)
+charLiteral :: Parser Char
+stringLiteral :: Parser String
+commaSep1 :: Parser a -> Parser [a]
+parens, brackets, braces :: Parser a -> Parser a
+whiteSpace :: Parser ()
+
 Token.TokenParser
   { Token.identifier
-  , Token.reserved
   , Token.operator
+  , Token.reserved
   , Token.reservedOp
   , Token.natural
   , Token.naturalOrFloat
@@ -267,8 +274,7 @@ parseAny = do
   reserved "any"
   vars <- Parsec.many1 identifierLower
   reservedOp "."
-  tipe <- parseType
-  return (Forall vars tipe)
+  Forall vars <$> parseType
 
 parseScheme :: Parser Scheme
 parseScheme =
@@ -282,8 +288,7 @@ parseKind = do
   where
     parseKArr k1 = do
       reservedOp "->"
-      k2 <- parseKind
-      return (KArr k1 k2)
+      KArr k1 <$> parseKind
 
 parseKFactor :: Parser Kind
 parseKFactor =
@@ -298,8 +303,7 @@ parseAnnotation annotation = do
   reserved "val"
   names <- commaSep1 nameOrOperator
   reservedOp "::"
-  tipe <- parseScheme
-  return (annotation names tipe)
+  annotation names <$> parseScheme
 
 parseFunc :: (Name -> [Name] -> Expr -> a) -> Parser a
 parseFunc func = do
@@ -307,8 +311,7 @@ parseFunc func = do
   name <- nameOrOperator
   args <- Parsec.many identifierLower
   reservedOp "="
-  body <- parseExpr
-  return (func name args body)
+  func name args <$> parseExpr
 
 parseExpand :: Parser SimpleDef
 parseExpand = do
@@ -316,8 +319,7 @@ parseExpand = do
   name <- nameOrOperator
   args <- Parsec.many identifierLower
   reservedOp "="
-  body <- parseExpr
-  return (Expand name args body)
+  Expand name args <$> parseExpr
 
 parseTypeDef :: Parser SimpleDef
 parseTypeDef = do
@@ -326,7 +328,6 @@ parseTypeDef = do
   parseBase name <|> parseSynonym name
   where
     parseBase name = do
-      loc <- getLocation
       reservedOp "::"
       kind <- parseKind
       wrapper <- fmap Just (parseWrapper name) <|> return Nothing
@@ -335,8 +336,7 @@ parseTypeDef = do
     parseSynonym name = do
       args <- Parsec.many identifierLower
       reservedOp "="
-      body <- parseType
-      return (Synonym name args body)
+      Synonym name args <$> parseType
 
 parseWrapper :: Name -> Parser Wrapper
 parseWrapper name = do
@@ -354,8 +354,8 @@ parseWrapper name = do
     parseUnwrapper = do
       loc <- getLocation
       reservedOp ","
-      name <- identifierLower
-      return (name, loc)
+      unwrapper <- identifierLower
+      return (unwrapper, loc)
 
 parseForeign :: Parser SimpleDef
 parseForeign = do
@@ -363,8 +363,7 @@ parseForeign = do
   name <- nameOrOperator
   args <- Parsec.many identifierLower
   reservedOp "="
-  body <- stringLiteral
-  return (Foreign name args body)
+  Foreign name args <$> stringLiteral
 
 parseInfix :: Parser SimpleDef
 parseInfix = do
@@ -377,9 +376,7 @@ parseInfix = do
 parseSyntax :: Parser SimpleDef
 parseSyntax = do
   reserved "syntax"
-  name <- nameOrOperator
-  role <- parseRole
-  return (Syntax name role)
+  Syntax <$> nameOrOperator <*> parseRole
   where
     when word role = reserved word >> return role
     parseRole =
@@ -464,7 +461,7 @@ operatorParsers combine =
     toList =
       map (map toParser)
       . List.foldl' add []
-      . List.sortOn (\(n, (a, p)) -> p)
+      . List.sortOn (\(_, (_, p)) -> p)
       . Map.toList
 
     add [] op = [[op]]

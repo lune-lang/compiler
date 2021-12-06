@@ -8,7 +8,6 @@ module Compiler.Infer (checkModule) where
 import qualified Data.Maybe as Maybe
 import qualified Data.Bifunctor as Bf
 import qualified Data.Foldable as Fold
-import qualified Text.Read as Read
 import qualified Control.Monad as Monad
 import Data.Function ((&))
 
@@ -44,7 +43,10 @@ convertType (tipe, _) =
 convertScheme :: D.Scheme -> Scheme
 convertScheme (D.Forall vs t) = Forall vs (convertType t)
 
+pattern TCall2 :: Type -> Type -> Type -> Type
 pattern TCall2 t1 t2 t3 = TCall (TCall t1 t2) t3
+
+pattern TCall3 :: Type -> Type -> Type -> Type -> Type
 pattern TCall3 t1 t2 t3 t4 = TCall (TCall2 t1 t2 t3) t4
 
 data Env = Env
@@ -114,9 +116,6 @@ type Infer = InferWith Error.Msg
 extendEnv :: Identifier -> Scheme -> Infer a -> Infer a
 extendEnv n t = Reader.local (typeEnv %~ Map.insert n t)
 
-extendKindEnv :: Identifier -> Kind -> Infer a  -> Infer a
-extendKindEnv n k = Reader.local (kindEnv %~ Map.insert n k)
-
 specialType :: Role -> Location -> InferWith String Type -> Infer Type
 specialType role loc err = do
   special <- Reader.asks (^. syntax)
@@ -172,7 +171,7 @@ unify loc t1 t2 = State.modify $ constraints %~ ((loc, t1, t2):)
 
 freshVar :: Origin -> Infer Type
 freshVar origin = do
-  var <- first <$> State.gets (^. freshNames)
+  var <- State.gets (first . Lens.view freshNames)
   State.modify (freshNames %~ rest)
   return $ TVar (var, origin)
   where
@@ -305,8 +304,8 @@ inferKind (tipe, loc) =
         Nothing -> Error.withLocation loc (Error.notDefined n)
         Just k -> return (k, Map.empty)
 
-    D.TLabel n -> return (KLabel, Map.empty)
-    D.TVar n -> Error.withLocation loc Error.typeVariables
+    D.TLabel _ -> return (KLabel, Map.empty)
+    D.TVar _ -> Error.withLocation loc Error.typeVariables
 
     D.TCall t1@(_, loc1) t2 -> do
       (k1, s1) <- inferKind t1
@@ -356,15 +355,15 @@ checkFuncs = \case
       extendEnv n sc (checkFuncs fs)
 
 equivalent :: Location -> Type -> Type -> Infer ()
-equivalent loc t1 t2 =
-  Monad.when bad $ Error.withLocation loc (Error.unification t1 t2)
+equivalent loc tipe1 tipe2 =
+  Monad.when bad $ Error.withLocation loc (Error.unification tipe1 tipe2)
   where
     pairings = curry \case
       (TCall t1 t2, TCall t3 t4) -> pairings t1 t3 <> pairings t2 t4
       (TVar (v1, _), TVar (v2, _)) -> Set.singleton (v1, v2)
       _ -> Set.empty
 
-    pairs = pairings t1 t2
+    pairs = pairings tipe1 tipe2
 
     bad =
       Set.size (Set.map fst pairs) < Set.size pairs ||
@@ -381,31 +380,31 @@ wrapperEnv n (_, w) =
           & foldl (\t1 t2 -> (D.TCall t1 t2, loc)) (D.TCon n, loc)
       in
       Error.defContext n do
-        checkKind KType wrapped
-        checkKind KType t
+        _ <- checkKind KType wrapped
+        _ <- checkKind KType t
         let wrapped' = convertType wrapped
         let t' = convertType t
         makerType <- Forall vs <$> functionType loc t' wrapped'
         getterType <- Forall vs <$> functionType loc wrapped' t'
-        let makerEnv = Map.singleton maker makerType
-        let typeEnv = case getter of
-              Nothing -> makerEnv
-              Just gt -> Map.insert gt getterType makerEnv
-        return (Env typeEnv Map.empty Map.empty)
+        let envMaker = Map.singleton maker makerType
+        let envTypes = case getter of
+              Nothing -> envMaker
+              Just gt -> Map.insert gt getterType envMaker
+        return (Env envTypes Map.empty Map.empty)
 
 checkModule :: Module -> Either Error.Msg ()
-checkModule (Module funcs _ foreigns types _ syntax) =
+checkModule (Module funcs _ foreigns types _ syntaxDefs) =
   State.evalState (Reader.runReaderT (Except.runExceptT check) env) state
   where
     state = InferState [] (foldr Cons undefined fresh)
 
     envTypes = fmap (convertScheme . fst) foreigns
     envKinds = fmap fst types
-    envSyntax = fmap (Bf.first convertType) syntax
+    envSyntax = fmap (Bf.first convertType) syntaxDefs
     env = Env envTypes envKinds envSyntax
 
     prefixes = map (:[]) ['a'..'z']
-    numbers = concatMap (replicate $ length prefixes) [0..]
+    numbers = concatMap (replicate $ length prefixes) ([0..] :: [Int])
     fresh = zipWith (++) (cycle prefixes) (map show numbers)
 
     checkForeign n (D.Forall _ t, _) =

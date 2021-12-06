@@ -13,8 +13,6 @@ module Syntax.Desugared
 import qualified Data.Map as Map
 import Data.Map (Map)
 
-import qualified Control.Lens as Lens
-
 import Syntax.Common
 
 data SimpleExpr

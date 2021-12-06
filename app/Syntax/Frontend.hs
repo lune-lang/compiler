@@ -16,8 +16,6 @@ module Syntax.Frontend
   , Module(..)
   ) where
 
-import qualified Control.Lens as Lens
-
 import Syntax.Common
 
 data SimpleExpr

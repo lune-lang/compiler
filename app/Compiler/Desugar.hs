@@ -13,7 +13,6 @@ import qualified Data.Bifunctor as Bf
 import qualified Data.Foldable as Fold
 import qualified Control.Monad as Monad
 import Data.Function ((&))
-import Data.Functor ((<&>))
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
@@ -22,10 +21,8 @@ import Data.Set (Set, (\\))
 
 import qualified Control.Monad.Except as Except
 import qualified Control.Monad.Reader as Reader
-import qualified Control.Monad.State as State
 import Control.Monad.Except (ExceptT)
 import Control.Monad.Reader (Reader)
-import Control.Monad.State (State)
 
 import qualified Compiler.Error as Error
 import qualified Syntax.Frontend as F
@@ -35,11 +32,9 @@ import Syntax.Common
 import qualified Control.Lens as Lens
 import Control.Lens ((^.))
 
-import Debug.Trace
-
 data Interface = Interface
-  { _values :: [(Name, Location)]
-  , _types :: [(Name, Location)]
+  { _interfaceValues :: [(Name, Location)]
+  , _interfaceTypes :: [(Name, Location)]
   }
 
 Lens.makeLenses ''Interface
@@ -48,10 +43,10 @@ emptyInterface :: Interface
 emptyInterface = Interface [] []
 
 getValueNames :: Interface -> [Name]
-getValueNames = map fst . Lens.view values
+getValueNames = map fst . Lens.view interfaceValues
 
 getTypeNames :: Interface -> [Name]
-getTypeNames = map fst . Lens.view types
+getTypeNames = map fst . Lens.view interfaceTypes
 
 data VarMap = VarMap
   { _valueSubs :: Map Identifier Identifier
@@ -76,13 +71,13 @@ insertValue :: Insert Interface (Name, Location)
 insertValue interface (name, loc) =
   if name `elem` getValueNames interface
     then Error.withLocation loc (Error.multipleDef name)
-    else return $ Lens.over values ((name, loc):) interface
+    else return $ Lens.over interfaceValues ((name, loc):) interface
 
 insertType :: Insert Interface (Name, Location)
 insertType interface (name, loc) =
   if name `elem` getTypeNames interface
     then Error.withLocation loc (Error.multipleDef name)
-    else return $ Lens.over types ((name, loc):) interface
+    else return $ Lens.over interfaceTypes ((name, loc):) interface
 
 insertDef :: [F.SimplePort] -> Insert Interface F.Def
 insertDef exports interface (def, loc) =
@@ -100,14 +95,14 @@ insertDef exports interface (def, loc) =
     F.Infix _ -> return interface
     F.Syntax _ _ -> return interface
   where
-    valueDef interface' (name, loc) =
+    valueDef interface' (name, loc') =
       if F.ValuePort name `elem` exports
-        then insertValue interface' (name, loc)
+        then insertValue interface' (name, loc')
         else return interface'
 
-    typeDef interface' (name, loc) =
+    typeDef interface' (name, loc') =
       if F.TypePort name `elem` exports
-        then insertType interface' (name, loc)
+        then insertType interface' (name, loc')
         else return interface'
 
 addExport :: [F.SimplePort] -> [F.SimplePort] -> F.Port -> Desugar [F.SimplePort]
@@ -135,8 +130,8 @@ getExports m =
         F.Infix _ -> []
         F.Syntax _ _ -> []
 
-getInterface :: ModName -> F.Module -> Desugar Interface
-getInterface modName m = do
+getInterface :: F.Module -> Desugar Interface
+getInterface m = do
   exports <- getExports m
   Monad.foldM (insertDef exports) emptyInterface (F.getDefs m)
 
@@ -225,9 +220,9 @@ makeJavascript :: [Name] -> String -> String
 makeJavascript args body =
   foldr makeJS body args
   where
-    makeJS arg body = concat
+    makeJS arg js = concat
       [ "function(", arg
-      , "){ return ", body
+      , "){ return ", js
       , "; }"
       ]
 
@@ -308,8 +303,8 @@ desugarDefs modName defs = do
             else return (annos, funcs, expands, foreigns, types, synonyms)
 
 desugarLocalDefs :: [F.LocalDef] -> Desugar [(Name, Maybe Scheme, Expr, Location)]
-desugarLocalDefs defs = do
-  (annos, funcs) <- Monad.foldM addDef (Map.empty, []) defs
+desugarLocalDefs definitions = do
+  (annos, funcs) <- Monad.foldM addDef (Map.empty, []) definitions
   let funcNames = map (\(n, _, _) -> n) funcs
   mapM_ (existsAnno funcNames) (Map.keys annos)
   arrange (mergeAnnos annos funcs)
@@ -322,8 +317,8 @@ desugarLocalDefs defs = do
           let annos = Map.fromList $ zip keys (repeat tipe')
           return $ Bf.first (annos <>) defs
 
-        F.LFunc name args body@(_, loc) -> do
-          body' <- desugarExpr (F.Lambda args body, loc)
+        F.LFunc name args body@(_, bodyLoc) -> do
+          body' <- desugarExpr (F.Lambda args body, bodyLoc)
           return $ Bf.second ((name, body', loc) :) defs
 
 existsAnno :: (Eq a, Error.NameError a) => [a] -> (a, Location) -> Desugar ()
@@ -426,32 +421,9 @@ getSynonymOrder refs
   | otherwise = (Set.toList roots ++) <$> getOrder rest
   where
     loc = snd $ snd $ head (Map.toList refs)
-    isRoot n (rs, _) = Set.null rs
+    isRoot _ (rs, _) = Set.null rs
     roots = Map.keysSet (Map.filterWithKey isRoot refs)
     rest = Bf.first (\\ roots) <$> foldr Map.delete refs roots
-
-variableNames :: F.Expr -> Set Name
-variableNames (expr, _) =
-  case expr of
-    F.Int _ -> Set.empty
-    F.Float _ -> Set.empty
-    F.Char _ -> Set.empty
-    F.String _ -> Set.empty
-    F.Label _ -> Set.empty
-
-    F.Identifier (Unqualified n) -> Set.singleton n
-    F.Identifier _ -> Set.empty
-    F.Operator _ _ _ -> Set.empty
-
-    F.DefIn ds x -> foldMap variablesDef ds <> variableNames x
-    F.Lambda _ x -> variableNames x
-    F.Delay x -> variableNames x
-    F.Call x y -> variableNames x <> variableNames y
-  where
-    variablesDef (def, _) =
-       case def of
-         F.LAnnotation _ _ -> Set.empty
-         F.LFunc _ _ x -> variableNames x
 
 desugarExpr :: F.Expr -> Desugar Expr
 desugarExpr (expr, loc) =
@@ -520,11 +492,7 @@ desugarExpr (expr, loc) =
     where
       withLoc x = return (x, loc)
 
-      safeVar =
-        [1..] >>= flip Monad.replicateM ['a'..'z']
-        & filter (\n -> Set.notMember n $ variableNames (expr, loc))
-        & head
-
+      safeVar = "_x"
       varRef = Identifier (Unqualified safeVar)
 
       ifDefined name f = do
@@ -585,7 +553,6 @@ desugarType as (tipe, loc) =
 
 desugarModule :: Map ModName Interface -> ModName -> F.Module -> Desugar Module
 desugarModule interfaces modName m = do
-  exports <- getExports m
   vars <- Monad.foldM (insertImport interfaces) emptyVars (F.getImports m)
   vars' <- Monad.foldM (insertTopLevelDef modName) vars (F.getDefs m)
   Reader.local (Bf.second $ const vars') $
@@ -596,17 +563,17 @@ desugarModules modules =
   Reader.runReader (Except.runExceptT desugar) (Map.empty, emptyVars)
   where
     desugar = do
-      interfaces <- sequence (Map.mapWithKey getInterface modules)
+      interfaces <- mapM getInterface modules
       hasMain interfaces
       noRepeatedInfix (concatMap F.getDefs modules)
       syntax <- getSyntaxMap (fmap F.getDefs modules)
       modules' <- Reader.local (Bf.first $ const syntax) $
         sequence $ Map.mapWithKey (desugarModule interfaces) modules
-      let Module funcs expands foreigns types synonyms syntax = Fold.fold modules'
+      let Module funcs expands foreigns types synonyms syntaxDefs = Fold.fold modules'
       funcs' <- arrange funcs
       expands' <- arrangeSynonyms freeVars expands
       synonyms' <- arrangeSynonyms freeCons synonyms
-      return (Module funcs' expands' foreigns types synonyms' syntax)
+      return (Module funcs' expands' foreigns types synonyms' syntaxDefs)
 
 hasMain :: Map ModName Interface -> Desugar ()
 hasMain interfaces =
@@ -628,7 +595,7 @@ noRepeatedInfix =
 
 getSyntaxMap :: Map ModName [F.Def] -> Desugar SyntaxMap
 getSyntaxMap modules = do
-  (roles, syntax) <- Monad.foldM addSyntax ([], Map.empty) defs
+  (_, syntax) <- Monad.foldM addSyntax ([], Map.empty) defs
   return syntax
   where
     pair m ds = zip (repeat m) ds
