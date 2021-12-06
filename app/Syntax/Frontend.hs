@@ -31,6 +31,7 @@ data SimpleExpr
   | Operator Name (Maybe Expr) (Maybe Expr)
   | DefIn [LocalDef] Expr
   | Lambda [Name] Expr
+  | Delay Expr
   | Call Expr Expr
 
 type Expr = (SimpleExpr, Location)

@@ -167,6 +167,12 @@ parseLambda = do
   body <- parseExpr
   return (Lambda args body, loc)
 
+parseDelay :: Parser Expr
+parseDelay = do
+  loc <- getLocation
+  expr <- parseExpr
+  return (Delay expr, loc)
+
 parseParensExpr :: Parser Expr
 parseParensExpr = parens $
   parseOperator <|>
@@ -199,6 +205,7 @@ parseFactor =
   parseNegate <|>
   parseDefIn <|>
   parseLambda <|>
+  parseDelay <|>
   parseParensExpr
 
 parseCallFactor :: Parser Expr
