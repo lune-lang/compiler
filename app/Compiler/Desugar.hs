@@ -445,6 +445,7 @@ variableNames (expr, _) =
 
     F.DefIn ds x -> foldMap variablesDef ds <> variableNames x
     F.Lambda _ x -> variableNames x
+    F.Delay x -> variableNames x
     F.Call x y -> variableNames x <> variableNames y
   where
     variablesDef (def, _) =
@@ -506,6 +507,10 @@ desugarExpr (expr, loc) =
         body' <- desugarExpr body
         let lambda n x = withLoc (Lambda n x)
         Fold.foldrM lambda body' args
+
+    F.Delay body -> do
+      body' <- desugarExpr body
+      withLoc (Lambda safeVar body')
 
     F.Call func arg -> do
       func' <- desugarExpr func
