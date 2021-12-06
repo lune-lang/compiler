@@ -170,7 +170,7 @@ parseLambda = do
 parseDelay :: Parser Expr
 parseDelay = do
   loc <- getLocation
-  expr <- parseExpr
+  expr <- braces parseExpr
   return (Delay expr, loc)
 
 parseParensExpr :: Parser Expr
