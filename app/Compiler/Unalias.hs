@@ -16,6 +16,7 @@ import qualified Control.Monad.Reader as Reader
 import Control.Monad.Except (ExceptT)
 import Control.Monad.Reader (Reader)
 
+import qualified Compiler.Arrange as Arrange
 import qualified Compiler.Error as Error
 import Syntax.Common
 import Syntax.Desugared
@@ -211,10 +212,10 @@ addSynonym (name, vars, tipe, _) synonyms =
 
 unalias :: Module -> Unalias Module
 unalias (Module funcs expands foreigns types synonyms syntax) = do
-  expands' <- expandMap expands
-  synonyms' <- synonymMap synonyms
+  expands' <- expandMap =<< Arrange.arrange False expands
+  synonyms' <- synonymMap =<< Arrange.arrange False synonyms
   Reader.local (const (expands', synonyms')) do
-    funcs' <- mapM unaliasFunc funcs
+    funcs' <- Arrange.arrange True =<< mapM unaliasFunc funcs
     foreigns' <- sequence (Map.mapWithKey unaliasForeign foreigns)
     types' <- sequence (Map.mapWithKey unaliasTypeDef types)
     syntax' <- mapM unaliasSyntax syntax

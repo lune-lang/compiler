@@ -8,22 +8,19 @@
 module Compiler.Desugar (desugarModules) where
 
 import qualified Data.Maybe as Maybe
-import qualified Data.List as List
 import qualified Data.Bifunctor as Bf
 import qualified Data.Foldable as Fold
 import qualified Control.Monad as Monad
-import Data.Function ((&))
 
 import qualified Data.Map as Map
-import qualified Data.Set as Set
 import Data.Map (Map)
-import Data.Set (Set, (\\))
 
 import qualified Control.Monad.Except as Except
 import qualified Control.Monad.Reader as Reader
 import Control.Monad.Except (ExceptT)
 import Control.Monad.Reader (Reader)
 
+import qualified Compiler.Arrange as Arrange
 import qualified Compiler.Error as Error
 import qualified Syntax.Frontend as F
 import Syntax.Desugared
@@ -307,7 +304,7 @@ desugarLocalDefs definitions = do
   (annos, funcs) <- Monad.foldM addDef (Map.empty, []) definitions
   let funcNames = map (\(n, _, _) -> n) funcs
   mapM_ (existsAnno funcNames) (Map.keys annos)
-  arrange (mergeAnnos annos funcs)
+  Arrange.arrange True (mergeAnnos annos funcs)
   where
     addDef defs (def, loc) =
       case def of
@@ -338,92 +335,6 @@ mergeForeignAnnos annos =
     case Map.lookup name (Map.mapKeys fst annos) of
       Nothing -> Error.withLocation loc (Error.noForeignAnno name)
       Just tipe -> return (tipe, js)
-
-class Ord a => Variable a where
-  fromIdentifier :: Identifier -> Set a
-  unqualified :: Name -> a
-
-instance Variable Name where
-  fromIdentifier = \case
-    Unqualified n -> Set.singleton n
-    Qualified _ _ -> Set.empty
-  unqualified = id
-
-instance Variable Identifier where
-  fromIdentifier = Set.singleton
-  unqualified = Unqualified
-
-freeVars :: Variable a => Expr -> Set a
-freeVars (expr, _) =
-  case expr of
-    Int _ -> Set.empty
-    Float _ -> Set.empty
-    Char _ -> Set.empty
-    String _ -> Set.empty
-    Label _ -> Set.empty
-
-    Identifier n -> fromIdentifier n
-
-    DefIn name _ value body -> Set.delete (unqualified name)
-      (freeVars value <> freeVars body)
-
-    Lambda name body -> Set.delete (unqualified name)
-      (freeVars body)
-
-    Call func arg -> freeVars func <> freeVars arg
-
-arrange :: Variable a => [(a, Maybe Scheme, Expr, Location)] -> Desugar [(a, Maybe Scheme, Expr, Location)]
-arrange funcs = do
-  order <- getOrder referenceMap
-  let position name = Maybe.fromMaybe 0 (List.elemIndex name order)
-  return $ List.sortOn (position . nameOf) funcs
-  where
-    nameOf (n, _, _, _) = n
-    vars = Set.filter (`elem` map nameOf funcs) . freeVars
-    referenceMap = Map.fromList $ map (\(n, _, x, loc) -> (n, (vars x, loc))) funcs
-
-getOrder :: Variable a => Map a (Set a, Location) -> Desugar [a]
-getOrder refs
-  | Map.null refs = return []
-  | Set.null roots = Error.withLocation loc Error.mutualRecursion
-  | otherwise = (Set.toList roots ++) <$> getOrder rest
-  where
-    loc = snd $ snd $ head (Map.toList refs)
-    isRoot n (rs, _) = Set.null rs || Set.toList rs == [n]
-    roots = Map.keysSet (Map.filterWithKey isRoot refs)
-    rest = Bf.first (\\ roots) <$> foldr Map.delete refs roots
-
-freeCons :: Type -> Set Identifier
-freeCons (tipe, _) =
-  case tipe of
-    TCon n -> Set.singleton n
-    TVar _ -> Set.empty
-    TLabel _ -> Set.empty
-    TCall func arg -> freeCons func <> freeCons arg
-
-arrangeSynonyms :: (a -> Set Identifier) -> [(Identifier, [Name], a, Location)] -> Desugar [(Identifier, [Name], a, Location)]
-arrangeSynonyms free syns = do
-  order <- getSynonymOrder referenceMap
-  let position name = Maybe.fromMaybe 0 (List.elemIndex name order)
-  return $ List.sortOn (position . nameOf) syns
-  where
-    nameOf (n, _, _, _) = n
-    cons = Set.filter (`elem` map nameOf syns) . free
-    removeArgs = map (\(n, _, t, loc) -> (n, (t, loc)))
-    referenceMap =
-      map (Bf.second $ Bf.first cons) (removeArgs syns)
-      & Map.fromList
-
-getSynonymOrder :: Map Identifier (Set Identifier, Location) -> Desugar [Identifier]
-getSynonymOrder refs
-  | Map.null refs = return []
-  | Set.null roots = Error.withLocation loc Error.synonymRecursion
-  | otherwise = (Set.toList roots ++) <$> getOrder rest
-  where
-    loc = snd $ snd $ head (Map.toList refs)
-    isRoot _ (rs, _) = Set.null rs
-    roots = Map.keysSet (Map.filterWithKey isRoot refs)
-    rest = Bf.first (\\ roots) <$> foldr Map.delete refs roots
 
 desugarExpr :: F.Expr -> Desugar Expr
 desugarExpr (expr, loc) =
@@ -567,13 +478,8 @@ desugarModules modules =
       hasMain interfaces
       noRepeatedInfix (concatMap F.getDefs modules)
       syntax <- getSyntaxMap (fmap F.getDefs modules)
-      modules' <- Reader.local (Bf.first $ const syntax) $
-        sequence $ Map.mapWithKey (desugarModule interfaces) modules
-      let Module funcs expands foreigns types synonyms syntaxDefs = Fold.fold modules'
-      funcs' <- arrange funcs
-      expands' <- arrangeSynonyms freeVars expands
-      synonyms' <- arrangeSynonyms freeCons synonyms
-      return (Module funcs' expands' foreigns types synonyms' syntaxDefs)
+      Fold.fold <$> (Reader.local (Bf.first $ const syntax) $
+        sequence $ Map.mapWithKey (desugarModule interfaces) modules)
 
 hasMain :: Map ModName Interface -> Desugar ()
 hasMain interfaces =
