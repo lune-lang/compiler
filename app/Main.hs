@@ -13,6 +13,7 @@ import qualified Data.Map as Map
 
 import qualified System.Directory as Dir
 import qualified System.Directory.Internal.Prelude as Pre
+import qualified System.Process as Proc
 
 import qualified Compiler.Error as Error
 import Compiler.Parse (parseFiles)
@@ -29,38 +30,57 @@ main = do
     ["init"] -> initialise
     ["compile"] -> compile False
     ["check"] -> compile True
+    ["clone", user, repo] -> clone user repo
     _ -> do
       putStrLn "Valid commands:"
-      putStrLn (prog ++ " init    -- create an empty Lune project in this folder")
-      putStrLn (prog ++ " compile -- convert source code into JS and HTML")
-      putStrLn (prog ++ " check   -- run the type checker without compiling")
+      putStrLn (prog ++ " init               -- create an empty Lune project in this folder")
+      putStrLn (prog ++ " compile            -- convert source code into JS and HTML")
+      putStrLn (prog ++ " check              -- run the type checker without compiling")
+      putStrLn (prog ++ " clone [user] [foo] -- add the Github repo user/foo to dependencies")
 
 initialise :: IO ()
 initialise = do
   Dir.createDirectory "src"
   Dir.createDirectory "depends"
   writeFile "src/Main.lune" ""
+  putStrLn "Lune project initialised"
 
 compile :: Bool -> IO ()
 compile checkOnly =
   tryIO safeGetFiles \(modNames, lunePaths, jsPaths) ->
-    try (noDuplicates modNames) \() -> do
-      putStrLn "Parsing files..."
-      tryIO (parseFiles lunePaths) \modules -> do
-        putStrLn "Desugaring code..."
-        try (desugarModules $ Map.fromList $ zip modNames modules) \defs -> do
-          putStrLn "Expanding synonyms..."
-          try (unaliasModule defs) \defs' -> do
-            putStrLn "Checking types..."
-            try (checkModule defs') \() ->
-              if checkOnly
-                then putStrLn "All is well"
-                else do
-                  putStrLn "Generating javascript..."
-                  javascript <- concat <$> mapM readFile jsPaths
-                  writeFile "index.html" indexHtml
-                  writeFile "output.js" (genModule javascript defs')
-                  putStrLn "Compiled into \"output.js\""
+  try (noDuplicates modNames) \() ->
+  tryIO (parseFiles lunePaths) \modules ->
+  try (desugarModules $ Map.fromList $ zip modNames modules) \defs ->
+  try (unaliasModule defs) \defs' ->
+  try (checkModule defs') \() ->
+    if checkOnly
+      then putStrLn "All is well"
+      else do
+        javascript <- concat <$> mapM readFile jsPaths
+        writeFile "index.html" indexHtml
+        writeFile "output.js" (genModule javascript defs')
+        putStrLn "Compiled into \"output.js\""
+
+clone :: String -> String -> IO ()
+clone user repo = runClone
+  `catch` (\_ -> putStrLn "There is no \"src\" directory")
+  `Ex.finally` Dir.removePathForcibly "lune-temp"
+  where
+    runClone = do
+      Dir.createDirectory "lune-temp"
+      let url = concat [ "https://github.com/", user, "/", repo, ".git" ]
+      Proc.callProcess "git" [ "clone", url, "lune-temp" ]
+      moveAll "lune-temp/src" ("depends/" ++ repo)
+      hasDepends <- Dir.doesDirectoryExist "lune-temp/depends"
+      Monad.when hasDepends (moveAll "lune-temp/depends" "depends")
+      putStrLn "Successfully cloned repo"
+
+moveAll :: FilePath -> FilePath -> IO ()
+moveAll dir dest = do
+  paths <- Dir.listDirectory dir
+  Dir.createDirectoryIfMissing True dest
+  let move path = Dir.renamePath (dir ++ "/" ++ path) (dest ++ "/" ++ path)
+  mapM_ move paths
 
 indexHtml :: String
 indexHtml = unlines
@@ -104,8 +124,13 @@ safeGetFiles =
   where
     get = do
       src <- getFiles "src"
-      depends <- getFiles "depends" `catch` \_ -> return ([], [], [])
-      return (src <> depends)
+      packages <- Dir.listDirectory "depends"
+      let qualify p = "depends/" ++ p
+      depends <- mapM (catchGetFiles . qualify) packages
+      return (src <> Fold.fold depends)
+
+catchGetFiles :: FilePath -> IO ([ModName], [FilePath], [FilePath])
+catchGetFiles dir = getFiles dir `catch` \_ -> return ([], [], [])
 
 getFiles :: FilePath -> IO ([ModName], [FilePath], [FilePath])
 getFiles dir = do

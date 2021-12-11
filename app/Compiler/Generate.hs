@@ -157,7 +157,7 @@ genWrapper (Wrapper _ _ mk gt) =
 genModule :: String -> Module -> String
 genModule js m = concat
   [ concatMap genModuleDef (modNames m)
-  , js
+  , "\n", js
   , wrapperDefs
   , foreignDefs
   , funcDefs
