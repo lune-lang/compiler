@@ -1,50 +1,35 @@
-cabal-version:      2.4
-name:               lune
-version:            0.1.0.0
+cabal-version: 2.4
+name:          lune
+version:       0.1.0.0
 
--- A short (one-line) description of the package.
--- synopsis:
+author:     UnaryPlus
+maintainer: ombspring@gmail.com
 
--- A longer description of the package.
--- description:
-
--- A URL where users can report bugs.
--- bug-reports:
-
--- The license under which the package is released.
--- license:
-author:             UnaryPlus
-maintainer:         ombspring@gmail.com
-
--- A copyright notice.
--- copyright:
--- category:
-extra-source-files: CHANGELOG.md
+extra-source-files: README.md
 
 executable lune
-    main-is:          Main.hs
+    main-is: Main.hs
 
-    -- Modules included in this executable, other than Main.
-    other-modules:    Syntax.Frontend,
-                      Syntax.Desugared,
-                      Syntax.Inferred,
-                      Syntax.Common,
-                      Compiler.Parse,
-                      Compiler.Desugar,
-                      Compiler.Arrange,
-                      Compiler.Unalias,
-                      Compiler.Infer,
-                      Compiler.Generate,
-                      Compiler.Error
+    other-modules:
+      Syntax.Frontend,
+      Syntax.Desugared,
+      Syntax.Inferred,
+      Syntax.Common,
+      Compiler.Parse,
+      Compiler.Desugar,
+      Compiler.Arrange,
+      Compiler.Unalias,
+      Compiler.Infer,
+      Compiler.Generate,
+      Compiler.Error
 
-    -- LANGUAGE extensions used by modules in this package.
-    -- other-extensions:
-    build-depends:    base ^>=4.14.1.0,
-                      parsec,
-                      containers,
-                      mtl,
-                      lens,
-                      directory
+    build-depends:
+      base ^>=4.14.1.0,
+      parsec,
+      containers,
+      mtl,
+      lens,
+      directory
 
     ghc-options:      -Wall
     hs-source-dirs:   app
