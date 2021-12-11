@@ -25,8 +25,11 @@ module Compiler.Error
   , annotation
   , noForeignAnno
   , noModule
+  , duplicateModule
   , noMainModule
   , noMainFunction
+  , noSrcDirectory
+  , directoryRead
   , mutualRecursion
   , synonymRecursion
   , partialExpand
@@ -163,6 +166,10 @@ noModule :: (MonadError String m) => ModName -> m b
 noModule m = Except.throwError $
   "module " ++ m ++ " does not exist"
 
+duplicateModule :: (MonadError Msg m) => ModName -> m b
+duplicateModule m = Except.throwError $ Msg $
+  "Module " ++ m ++ " exists in two places"
+
 noMainModule :: (MonadError Msg m) => m b
 noMainModule = Except.throwError $ Msg
   "There is no Main module in your project"
@@ -170,6 +177,14 @@ noMainModule = Except.throwError $ Msg
 noMainFunction :: (MonadError Msg m) => m b
 noMainFunction = Except.throwError $ Msg
   "Main module does not export 'main' function"
+
+noSrcDirectory :: (MonadError Msg m) => m b
+noSrcDirectory = Except.throwError $ Msg
+  "There is no \"src\" directory"
+
+directoryRead :: (MonadError Msg m) => m b
+directoryRead = Except.throwError $ Msg
+  "Cannot read from directory"
 
 mutualRecursion :: (MonadError String m) => m b
 mutualRecursion = Except.throwError

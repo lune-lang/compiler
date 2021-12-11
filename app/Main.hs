@@ -1,9 +1,11 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE BlockArguments #-}
 
 module Main where
 
 import qualified Data.List as List
 import qualified Data.Foldable as Fold
+import qualified Control.Monad as Monad
 import qualified Control.Exception as Ex
 import qualified System.Environment as Env
 
@@ -12,6 +14,7 @@ import qualified Data.Map as Map
 import qualified System.Directory as Dir
 import qualified System.Directory.Internal.Prelude as Pre
 
+import qualified Compiler.Error as Error
 import Compiler.Parse (parseFiles)
 import Compiler.Desugar (desugarModules)
 import Compiler.Unalias (unaliasModule)
@@ -24,62 +27,85 @@ main = do
   args <- Env.getArgs
   case args of
     ["init"] -> initialise
-    ["compile"] -> compile
+    ["compile"] -> compile False
+    ["check"] -> compile True
     _ -> do
       putStrLn "Valid commands:"
-      putStrLn (prog ++ " init")
-      putStrLn (prog ++ " compile")
+      putStrLn (prog ++ " init    -- create an empty Lune project in this folder")
+      putStrLn (prog ++ " compile -- convert source code into JS and HTML")
+      putStrLn (prog ++ " check   -- run the type checker without compiling")
 
 initialise :: IO ()
 initialise = do
   Dir.createDirectory "src"
+  Dir.createDirectory "depends"
   writeFile "src/Main.lune" ""
-  writeFile "index.html" indexHtml
+
+compile :: Bool -> IO ()
+compile checkOnly =
+  tryIO safeGetFiles \(modNames, lunePaths, jsPaths) ->
+    try (noDuplicates modNames) \() -> do
+      putStrLn "Parsing files..."
+      tryIO (parseFiles lunePaths) \modules -> do
+        putStrLn "Desugaring code..."
+        try (desugarModules $ Map.fromList $ zip modNames modules) \defs -> do
+          putStrLn "Expanding synonyms..."
+          try (unaliasModule defs) \defs' -> do
+            putStrLn "Checking types..."
+            try (checkModule defs') \() ->
+              if checkOnly
+                then putStrLn "All is well"
+                else do
+                  putStrLn "Generating javascript..."
+                  javascript <- concat <$> mapM readFile jsPaths
+                  writeFile "index.html" indexHtml
+                  writeFile "output.js" (genModule javascript defs')
+                  putStrLn "Compiled into \"output.js\""
 
 indexHtml :: String
 indexHtml = unlines
   [ "<!DOCTYPE html>"
   , "<html>"
   , "<body>"
-  , "<script src=\"project.js\"></script>"
+  , "<script src=\"output.js\"></script>"
   , "</body>"
   , "</html>"
   ]
 
-compile :: IO ()
-compile =
-  safeGetFiles >>= \case
-    Left err -> putStrLn err
-    Right (modNames, lunePaths, jsPaths) -> do
-      putStrLn "Parsing files..."
-      parseFiles lunePaths >>= \case
-        Left err -> print err
-        Right modules -> do
-          putStrLn "Desugaring code..."
-          case desugarModules $ Map.fromList (zip modNames modules) of
-            Left err -> print err
-            Right defs -> do
-              putStrLn "Expanding synonyms..."
-              case unaliasModule defs of
-                Left err -> print err
-                Right defs' -> do
-                  putStrLn "Checking types..."
-                  case checkModule defs' of
-                    Left err -> print err
-                    Right () -> do
-                      putStrLn "Generating javascript..."
-                      javascript <- concat <$> mapM readFile jsPaths
-                      writeFile "project.js" (genModule javascript defs')
-                      putStrLn "Compiled into \"project.js\""
+try :: (Show e) => Either e a -> (a -> IO ()) -> IO ()
+try result f =
+  case result of
+    Left err -> print err
+    Right x -> f x
+
+tryIO :: (Show e) => IO (Either e a) -> (a -> IO ()) -> IO ()
+tryIO action f = do
+  result <- action
+  try result f
 
 type ModName = String
 
-safeGetFiles :: IO (Either String ([ModName], [FilePath], [FilePath]))
+noDuplicates :: [ModName] -> Either Error.Msg ()
+noDuplicates = Monad.void . Fold.foldrM consMaybe []
+  where
+    consMaybe m ms
+      | m `elem` ms = Error.duplicateModule m
+      | otherwise = Right (m : ms)
+
+catch :: IO a -> (Ex.IOException -> IO a) -> IO a
+catch = Ex.catch
+
+safeGetFiles :: IO (Either Error.Msg ([ModName], [FilePath], [FilePath]))
 safeGetFiles =
-  fmap Right (getFiles "src") `Ex.catch` \e ->
+  fmap Right get `catch` \e ->
     if Pre.isDoesNotExistError e
-      then return (Left "Error: there is no 'src' directory")
-      else return (Left "Error: failed to read from directory")
+      then return Error.noSrcDirectory
+      else return Error.directoryRead
+  where
+    get = do
+      src <- getFiles "src"
+      depends <- getFiles "depends" `catch` \_ -> return ([], [], [])
+      return (src <> depends)
 
 getFiles :: FilePath -> IO ([ModName], [FilePath], [FilePath])
 getFiles dir = do
