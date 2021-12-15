@@ -164,11 +164,9 @@ unaliasFunc (name, tipe, body, loc) =
     body' <- unaliasExpr body
     return (name, tipe', body', loc)
 
-unaliasForeign :: Identifier -> (Scheme, String) -> Unalias (Scheme, String)
-unaliasForeign name (tipe, js) =
-  Error.annoContext [name] do
-    tipe' <- unaliasScheme tipe
-    return (tipe', js)
+unaliasForeign :: Identifier -> Scheme -> Unalias Scheme
+unaliasForeign name tipe =
+  Error.annoContext [name] (unaliasScheme tipe)
 
 unaliasWrapper :: Wrapper -> Unalias Wrapper
 unaliasWrapper (Wrapper vars tipe maker getter) = do

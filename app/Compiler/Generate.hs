@@ -137,10 +137,6 @@ genModuleDef :: ModName -> String
 genModuleDef m = concat
   [ "var ", makeValid m, " = {}; " ]
 
-genForeign :: Identifier -> String -> String
-genForeign n js = concat
-  [ genIdentifier n, " = ", js, "; " ]
-
 genFunc :: Identifier -> Expr -> String
 genFunc n x = concat
   [ genIdentifier n, " = ", genExpr x, "; " ]
@@ -149,27 +145,19 @@ genWrapper :: Wrapper -> String
 genWrapper (Wrapper _ _ mk gt) =
   genIdentity mk ++ foldMap genIdentity gt
   where
-    genIdentity n = concat
-      [ genIdentifier n
-      , " = function(x) { return x; }; "
-      ]
+    genIdentity n =
+      genIdentifier n
+      ++ " = function(x) { return x; }; "
 
 genModule :: String -> Module -> String
 genModule js m = concat
   [ concatMap genModuleDef (modNames m)
   , "\n", js
   , wrapperDefs
-  , foreignDefs
   , funcDefs
   , genIdentifier (Qualified "Main" "main"), "();"
   ]
   where
-    foreignDefs =
-      getForeigns m
-      & fmap snd
-      & Map.toList
-      & concatMap (uncurry genForeign)
-
     funcDefs =
       getFuncs m
       & map (\(n, _, x, _) -> (n, x))

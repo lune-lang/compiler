@@ -56,9 +56,9 @@ type LocalDef = (SimpleLocalDef, Location)
 
 data SimpleDef
   = Annotation [Name] Scheme
+  | Foreign [Name] Scheme
   | Func Name [Name] Expr
   | Expand Name [Name] Expr
-  | Foreign Name [Name] String
   | Type Name Kind (Maybe Wrapper)
   | Synonym Name [Name] Type
   | Infix Name
