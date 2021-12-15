@@ -46,7 +46,7 @@ data Wrapper = Wrapper [Name] Type Identifier (Maybe Identifier)
 data Module = Module
   { getFuncs :: [(Identifier, Maybe Scheme, Expr, Location)]
   , getExpands :: [(Identifier, [Name], Expr, Location)]
-  , getForeigns :: Map Identifier (Scheme, String)
+  , getForeigns :: Map Identifier Scheme
   , getTypes :: Map Identifier (Kind, Maybe Wrapper)
   , getSynonyms :: [(Identifier, [Name], Type, Location)]
   , getSyntax :: Map Role (Either Type Expr)

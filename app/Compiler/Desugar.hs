@@ -29,6 +29,9 @@ import Syntax.Common
 import qualified Control.Lens as Lens
 import Control.Lens ((^.))
 
+zipRepeat :: [a] -> b -> [(a, b)]
+zipRepeat xs y = zip xs (repeat y)
+
 data Interface = Interface
   { _interfaceValues :: [(Name, Location)]
   , _interfaceTypes :: [(Name, Location)]
@@ -80,9 +83,9 @@ insertDef :: [F.SimplePort] -> Insert Interface F.Def
 insertDef exports interface (def, loc) =
   case def of
     F.Annotation _ _ -> return interface
+    F.Foreign names _ -> Monad.foldM valueDef interface (zipRepeat names loc)
     F.Func name _ _ -> valueDef interface (name, loc)
     F.Expand name _ _ -> valueDef interface (name, loc)
-    F.Foreign name _ _ -> valueDef interface (name, loc)
     F.Type name _ Nothing -> typeDef interface (name, loc)
     F.Type name _ (Just (F.Wrapper _ _ maker getter)) -> do
       interface' <- typeDef interface (name, loc)
@@ -116,9 +119,9 @@ getExports m =
     toPort (def, _) =
       case def of
         F.Annotation _ _ -> []
+        F.Foreign names _ -> map F.ValuePort names
         F.Func name _ _ -> [F.ValuePort name]
         F.Expand name _ _ -> [F.ValuePort name]
-        F.Foreign name _ _ -> [F.ValuePort name]
         F.Type name _ Nothing -> [F.TypePort name]
         F.Type name _ (Just (F.Wrapper _ _ maker getter)) ->
           [ F.TypePort name, F.ValuePort (fst maker) ] ++
@@ -192,9 +195,9 @@ insertTopLevelDef :: ModName -> Insert VarMap F.Def
 insertTopLevelDef modName vars (def, loc) =
   case def of
     F.Annotation _ _ -> return vars
+    F.Foreign names _ -> Monad.foldM addValue vars (zipRepeat names loc)
     F.Func name _ _ -> addValue vars (name, loc)
     F.Expand name _ _ -> addValue vars (name, loc)
-    F.Foreign name _ _ -> addValue vars (name, loc)
     F.Type name _ Nothing -> addType vars (name, loc)
     F.Type name _ (Just (F.Wrapper _ _ maker getter)) -> do
       vars' <- addType vars (name, loc)
@@ -213,16 +216,6 @@ insertLocalDef vars (def, loc) =
     F.LAnnotation _ _ -> return vars
     F.LFunc name _ _ -> insertLocalValue vars (name, loc)
 
-makeJavascript :: [Name] -> String -> String
-makeJavascript args body =
-  foldr makeJS body args
-  where
-    makeJS arg js = concat
-      [ "function(", arg
-      , "){ return ", js
-      , "; }"
-      ]
-
 separateSyntax :: Map Role (Identifier, Location) -> Map Role (Either Type Expr)
 separateSyntax = Map.mapWithKey separate
   where
@@ -234,21 +227,25 @@ desugarDefs modName defs = do
   (annos, funcs, expands, foreigns, types, synonyms) <-
     Monad.foldM addDef (Map.empty, [], [], Map.empty, Map.empty, []) defs
   let funcNames = map (\(n, _, _) -> n) funcs
-  let foreignNames = map fst (Map.keys foreigns)
-  mapM_ (existsAnno $ funcNames ++ foreignNames) (Map.keys annos)
+  mapM_ (existsAnno funcNames) (Map.keys annos)
   let funcs' = mergeAnnos annos funcs
-  foreigns' <- mergeForeignAnnos annos foreigns
   syntax <- Reader.asks (separateSyntax . fst)
-  return (Module funcs' expands foreigns' types synonyms syntax)
+  return (Module funcs' expands foreigns types synonyms syntax)
   where
     addDef (annos, funcs, expands, foreigns, types, synonyms) (def, loc) =
       case def of
         F.Annotation names tipe -> do
           let names' = map (Qualified modName) names
           tipe' <- Error.annoContext names' (desugarScheme tipe)
-          let keys = zip names' (repeat loc)
-          let newAnnos = Map.fromList (zip keys $ repeat tipe') <> annos
+          let keys = zipRepeat names' loc
+          let newAnnos = Map.fromList (zipRepeat keys tipe') <> annos
           return (newAnnos, funcs, expands, foreigns, types, synonyms)
+
+        F.Foreign names tipe -> do
+          let names' = map (Qualified modName) names
+          tipe' <- Error.annoContext names' (desugarScheme tipe)
+          let newForeigns = Map.fromList (zipRepeat names' tipe') <> foreigns
+          return (annos, funcs, expands, newForeigns, types, synonyms)
 
         F.Func name args body@(_, bodyLoc) -> do
           let name' = Qualified modName name
@@ -259,17 +256,11 @@ desugarDefs modName defs = do
 
         F.Expand name args body -> do
           let name' = Qualified modName name
-          local <- Monad.foldM insertLocalValue emptyVars $ zip args (repeat loc)
+          local <- Monad.foldM insertLocalValue emptyVars (zipRepeat args loc)
           body' <- Error.defContext name' $
             Reader.local (Bf.second (local <>)) (desugarExpr body)
           let newExpands = (name', args, body', loc) : expands
           return (annos, funcs, newExpands, foreigns, types, synonyms)
-
-        F.Foreign name args js -> do
-          let name' = Qualified modName name
-          let js' = makeJavascript args js
-          let newForeigns = Map.insert (name', loc) js' foreigns
-          return (annos, funcs, expands, newForeigns, types, synonyms)
 
         F.Type name kind Nothing -> do
           let name' = Qualified modName name
@@ -310,8 +301,8 @@ desugarLocalDefs definitions = do
       case def of
         F.LAnnotation names tipe -> do
           tipe' <- desugarScheme tipe
-          let keys = zip names (repeat loc)
-          let annos = Map.fromList $ zip keys (repeat tipe')
+          let keys = zipRepeat names loc
+          let annos = Map.fromList (zipRepeat keys tipe')
           return $ Bf.first (annos <>) defs
 
         F.LFunc name args body@(_, bodyLoc) -> do
@@ -326,15 +317,6 @@ existsAnno funcs (name, loc)
 mergeAnnos :: Ord a => Map (a, Location) Scheme -> [(a, Expr, Location)] -> [(a, Maybe Scheme, Expr, Location)]
 mergeAnnos annos = map \(name, body, loc) ->
   (name, Map.lookup name (Map.mapKeys fst annos), body, loc)
-
-mergeForeignAnnos :: Map (Identifier, a) Scheme -> Map (Identifier, Location) String -> Desugar (Map Identifier (Scheme, String))
-mergeForeignAnnos annos =
-  sequence .
-  Map.mapKeys fst .
-  Map.mapWithKey \(name, loc) js ->
-    case Map.lookup name (Map.mapKeys fst annos) of
-      Nothing -> Error.withLocation loc (Error.noForeignAnno name)
-      Just tipe -> return (tipe, js)
 
 desugarExpr :: F.Expr -> Desugar Expr
 desugarExpr (expr, loc) =
@@ -385,7 +367,7 @@ desugarExpr (expr, loc) =
         Fold.foldrM defIn body' defs'
 
     F.Lambda args body -> do
-      local <- Monad.foldM insertLocalValue emptyVars $ zip args (repeat loc)
+      local <- Monad.foldM insertLocalValue emptyVars (zipRepeat args loc)
       Reader.local (Bf.second (local <>)) do
         body' <- desugarExpr body
         let lambda n x = withLoc (Lambda n x)
@@ -478,8 +460,8 @@ desugarModules modules =
       hasMain interfaces
       noRepeatedInfix (concatMap F.getDefs modules)
       syntax <- getSyntaxMap (fmap F.getDefs modules)
-      Fold.fold <$> (Reader.local (Bf.first $ const syntax) $
-        sequence $ Map.mapWithKey (desugarModule interfaces) modules)
+      Fold.fold <$> Reader.local (Bf.first $ const syntax)
+        (sequence $ Map.mapWithKey (desugarModule interfaces) modules)
 
 hasMain :: Map ModName Interface -> Desugar ()
 hasMain interfaces =

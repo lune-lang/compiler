@@ -298,28 +298,20 @@ parseKFactor =
   (reserved "Label" >> return KLabel) <|>
   parens parseKind
 
-parseAnnotation :: ([Name] -> Scheme -> a) -> Parser a
-parseAnnotation annotation = do
-  reserved "val"
+parseAnnotation :: String -> ([Name] -> Scheme -> a) -> Parser a
+parseAnnotation word annotation = do
+  reserved word
   names <- commaSep1 nameOrOperator
   reservedOp "::"
   annotation names <$> parseScheme
 
-parseFunc :: (Name -> [Name] -> Expr -> a) -> Parser a
-parseFunc func = do
-  reserved "let"
+parseFunc :: String -> (Name -> [Name] -> Expr -> a) -> Parser a
+parseFunc word func = do
+  reserved word
   name <- nameOrOperator
   args <- Parsec.many identifierLower
   reservedOp "="
   func name args <$> parseExpr
-
-parseExpand :: Parser SimpleDef
-parseExpand = do
-  reserved "expand"
-  name <- nameOrOperator
-  args <- Parsec.many identifierLower
-  reservedOp "="
-  Expand name args <$> parseExpr
 
 parseTypeDef :: Parser SimpleDef
 parseTypeDef = do
@@ -357,14 +349,6 @@ parseWrapper name = do
       unwrapper <- identifierLower
       return (unwrapper, loc)
 
-parseForeign :: Parser SimpleDef
-parseForeign = do
-  reserved "foreign"
-  name <- nameOrOperator
-  args <- Parsec.many identifierLower
-  reservedOp "="
-  Foreign name args <$> stringLiteral
-
 parseInfix :: Parser SimpleDef
 parseInfix = do
   reserved "infix"
@@ -395,19 +379,19 @@ parseLocalDef :: Parser LocalDef
 parseLocalDef = do
   loc <- getLocation
   def <-
-    parseAnnotation LAnnotation <|>
-    parseFunc LFunc
+    parseAnnotation "val" LAnnotation <|>
+    parseFunc "let" LFunc
   return (def, loc)
 
 parseDef :: Parser Def
 parseDef = do
   loc <- getLocation
   def <-
-    parseAnnotation Annotation <|>
-    parseFunc Func <|>
-    parseExpand <|>
+    parseAnnotation "val" Annotation <|>
+    parseAnnotation "foreign" Foreign <|>
+    parseFunc "let" Func <|>
+    parseFunc "expand" Expand <|>
     parseTypeDef <|>
-    parseForeign <|>
     parseInfix <|>
     parseSyntax
   return (def, loc)

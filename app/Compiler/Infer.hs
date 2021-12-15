@@ -398,7 +398,7 @@ checkModule (Module funcs _ foreigns types _ syntaxDefs) =
   where
     state = InferState [] (foldr Cons undefined fresh)
 
-    envTypes = fmap (convertScheme . fst) foreigns
+    envTypes = fmap convertScheme foreigns
     envKinds = fmap fst types
     envSyntax = fmap (Bf.first convertType) syntaxDefs
     env = Env envTypes envKinds envSyntax
@@ -407,7 +407,7 @@ checkModule (Module funcs _ foreigns types _ syntaxDefs) =
     numbers = concatMap (replicate $ length prefixes) ([0..] :: [Int])
     fresh = zipWith (++) (cycle prefixes) (map show numbers)
 
-    checkForeign n (D.Forall _ t, _) =
+    checkForeign n (D.Forall _ t) =
       Error.defContext n $ Monad.void (checkKind KType t)
 
     check = do
