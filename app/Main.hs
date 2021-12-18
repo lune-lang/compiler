@@ -51,7 +51,7 @@ compile :: Bool -> IO ()
 compile checkOnly =
   tryIO safeGetFiles \(modNames, lunePaths, jsPaths) ->
   try (noDuplicates modNames) \() ->
-  tryIO (parseFiles lunePaths) \modules ->
+  tryIO (fst <$> parseFiles lunePaths) \modules ->
   try (desugarModules $ Map.fromList $ zip modNames modules) \defs ->
   try (unaliasModule defs) \defs' ->
   try (checkModule defs') \() ->

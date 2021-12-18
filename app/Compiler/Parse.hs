@@ -12,7 +12,6 @@ import qualified Control.Monad as Monad
 import Data.Functor.Identity (Identity)
 
 import qualified Data.Map as Map
-import Data.Map (Map)
 
 import qualified Text.Parsec as Parsec
 import qualified Text.Parsec.Token as Token
@@ -22,7 +21,6 @@ import Text.Parsec (Parsec, (<|>))
 import Syntax.Common
 import Syntax.Frontend
 
-type OpTable = Map Name (Ex.Assoc, Int)
 type Parser a = Parsec String OpTable a
 
 lexerStyle :: Token.LanguageDef OpTable
@@ -68,12 +66,13 @@ lexer = Token.makeTokenParser lexerStyle
 
 identifier, operator :: Parser String
 reserved, reservedOp :: String -> Parser ()
+symbol :: String -> Parser String
 natural :: Parser Integer
 naturalOrFloat :: Parser (Either Integer Double)
 charLiteral :: Parser Char
 stringLiteral :: Parser String
 commaSep1 :: Parser a -> Parser [a]
-parens, brackets, braces :: Parser a -> Parser a
+parens, brackets :: Parser a -> Parser a
 whiteSpace :: Parser ()
 
 Token.TokenParser
@@ -81,6 +80,7 @@ Token.TokenParser
   , Token.operator
   , Token.reserved
   , Token.reservedOp
+  , Token.symbol
   , Token.natural
   , Token.naturalOrFloat
   , Token.charLiteral
@@ -88,9 +88,13 @@ Token.TokenParser
   , Token.commaSep1
   , Token.parens
   , Token.brackets
-  , Token.braces
   , Token.whiteSpace
   } = lexer
+
+braces :: Parser a -> Parser a
+braces p = do
+  Parsec.notFollowedBy (symbol "{-")
+  Parsec.between (symbol "{") (symbol "}") p
 
 getLocation :: Parser Location
 getLocation = do
@@ -287,7 +291,7 @@ parseKind = do
   parseKArr k <|> return k
   where
     parseKArr k1 = do
-      reservedOp "->"
+      _ <- symbol "->"
       KArr k1 <$> parseKind
 
 parseKFactor :: Parser Kind
@@ -345,7 +349,7 @@ parseWrapper name = do
   where
     parseUnwrapper = do
       loc <- getLocation
-      reservedOp ","
+      _ <- symbol ","
       unwrapper <- identifierLower
       return (unwrapper, loc)
 
@@ -375,6 +379,11 @@ parseSyntax = do
       when "square-brackets" SquareBrackets <|>
       when "row-constructor" RowConstructor
 
+parseDocumentation :: Parser SimpleDef
+parseDocumentation = do
+  _ <- symbol "{-"
+  Documentation <$> Parsec.manyTill Parsec.anyChar (symbol "-}")
+
 parseLocalDef :: Parser LocalDef
 parseLocalDef = do
   loc <- getLocation
@@ -393,7 +402,8 @@ parseDef = do
     parseFunc "expand" Expand <|>
     parseTypeDef <|>
     parseInfix <|>
-    parseSyntax
+    parseSyntax <|>
+    parseDocumentation
   return (def, loc)
 
 parsePort :: Parser Port
@@ -458,8 +468,13 @@ operatorParsers combine =
         then [op] : ops
         else (op : head ops) : tail ops
 
+    convert = \case
+      LeftAssoc -> Ex.AssocLeft
+      RightAssoc -> Ex.AssocRight
+      NonAssoc -> Ex.AssocNone
+
     toParser (name, (assoc, _)) =
-      Ex.Infix (reservedOp name >> return (combine name)) assoc
+      Ex.Infix (reservedOp name >> return (combine name)) (convert assoc)
 
 parseModule :: Parser Module
 parseModule = do
@@ -474,6 +489,7 @@ parseModule = do
 data CommentState
   = Code
   | LineComment
+  | DocComment
   | BlockComment Int
 
 removeComments :: CommentState -> String -> String
@@ -481,11 +497,15 @@ removeComments = curry \case
   (_, []) -> []
 
   (Code, '-':'-':str) -> removeComments LineComment str
+  (Code, '{':'-':str) -> removeComments DocComment str
   (Code, '[':'-':str) -> removeComments (BlockComment 0) str
   (Code, c:str) -> c : removeComments Code str
 
   (LineComment, '\n':str) -> ' ' : removeComments Code str
   (LineComment, _:str) -> removeComments LineComment str
+
+  (DocComment, '-':'}':str) -> ' ' : removeComments Code str
+  (DocComment, _:str) -> removeComments DocComment str
 
   (BlockComment 0, '-':']':str) -> ' ' : removeComments Code str
   (BlockComment n, '-':']':str) -> removeComments (BlockComment $ n - 1) str
@@ -505,18 +525,19 @@ getInfixes = \case
 
   where
     parseAssoc = \case
-      "left" -> Just Ex.AssocLeft
-      "right" -> Just Ex.AssocRight
-      "non" -> Just Ex.AssocNone
+      "left" -> Just LeftAssoc
+      "right" -> Just RightAssoc
+      "non" -> Just NonAssoc
       _ -> Nothing
 
 getOptable :: String -> OpTable
 getOptable = getInfixes . words . removeComments Code
 
-parseFiles :: [FilePath] -> IO (Either Parsec.ParseError [Module])
+parseFiles :: [FilePath] -> IO (Either Parsec.ParseError [Module], OpTable)
 parseFiles paths = do
   programs <- mapM readFile paths
   let ops = getOptable (unlines programs)
-  return $ Monad.zipWithM
-    (Parsec.runParser parseModule ops)
-    paths programs
+  let modules = Monad.zipWithM
+        (Parsec.runParser parseModule ops)
+        paths programs
+  return (modules, ops)

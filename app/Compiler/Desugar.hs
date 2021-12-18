@@ -94,6 +94,7 @@ insertDef exports interface (def, loc) =
     F.Synonym name _ _ -> typeDef interface (name, loc)
     F.Infix _ -> return interface
     F.Syntax _ _ -> return interface
+    F.Documentation _ -> return interface
   where
     valueDef interface' (name, loc') =
       if F.ValuePort name `elem` exports
@@ -129,6 +130,7 @@ getExports m =
         F.Synonym name _ _ -> [F.TypePort name]
         F.Infix _ -> []
         F.Syntax _ _ -> []
+        F.Documentation _ -> []
 
 getInterface :: F.Module -> Desugar Interface
 getInterface m = do
@@ -206,6 +208,7 @@ insertTopLevelDef modName vars (def, loc) =
     F.Synonym name _ _ -> addType vars (name, loc)
     F.Infix _ -> return vars
     F.Syntax _ _ -> return vars
+    F.Documentation _ -> return vars
     where
       addType = insertImportType Unqualified modName
       addValue = insertImportValue Unqualified modName
@@ -282,6 +285,7 @@ desugarDefs modName defs = do
           return (annos, funcs, expands, foreigns, types, newSynonyms)
 
         F.Infix _ -> return (annos, funcs, expands, foreigns, types, synonyms)
+        F.Documentation _ -> return (annos, funcs, expands, foreigns, types, synonyms)
 
         F.Syntax name role -> do
           (VarMap valueNames typeNames) <- Reader.asks snd

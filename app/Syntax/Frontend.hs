@@ -10,11 +10,15 @@ module Syntax.Frontend
   , SimpleDef(..)
   , Def
   , SimplePort(..)
+  , Assoc(..)
+  , OpTable
   , Port
   , SimpleImport(..)
   , Import
   , Module(..)
   ) where
+
+import Data.Map (Map)
 
 import Syntax.Common
 
@@ -63,8 +67,13 @@ data SimpleDef
   | Synonym Name [Name] Type
   | Infix Name
   | Syntax Name Role
+  | Documentation String
 
 type Def = (SimpleDef, Location)
+
+data Assoc = LeftAssoc | RightAssoc | NonAssoc
+
+type OpTable = Map Name (Assoc, Int)
 
 data SimplePort
   = ValuePort Name
