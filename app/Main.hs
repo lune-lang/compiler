@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE BlockArguments #-}
 
-module Main where
+module Main (main) where
 
 import qualified Data.List as List
 import qualified Data.Foldable as Fold
@@ -30,13 +30,15 @@ main = do
     ["init"] -> initialise
     ["compile"] -> compile False
     ["check"] -> compile True
-    ["clone", user, repo] -> clone user repo
+    ["add", user, repo] -> addFolder user repo
+    ["remove", dir] -> removeFolder dir
     _ -> do
       putStrLn "Valid commands:"
       putStrLn (prog ++ " init               -- create an empty Lune project in this folder")
       putStrLn (prog ++ " compile            -- convert source code into JS and HTML")
       putStrLn (prog ++ " check              -- run the type checker without compiling")
-      putStrLn (prog ++ " clone [user] [foo] -- add the Github repo user/foo to dependencies")
+      putStrLn (prog ++ " add [user] [foo]   -- add the Github repo user/foo to dependencies")
+      putStrLn (prog ++ " remove [foo]       -- remove the package foo from dependencies")
 
 initialise :: IO ()
 initialise = do
@@ -61,19 +63,27 @@ compile checkOnly =
         writeFile "output.js" (genModule javascript defs')
         putStrLn "Compiled into \"output.js\""
 
-clone :: String -> String -> IO ()
-clone user repo = runClone
+addFolder :: String -> String -> IO ()
+addFolder user repo = add
   `catch` (\_ -> putStrLn "There is no \"src\" directory")
   `Ex.finally` Dir.removePathForcibly "lune-temp"
   where
-    runClone = do
+    add = do
       Dir.createDirectory "lune-temp"
       let url = concat [ "https://github.com/", user, "/", repo, ".git" ]
-      Proc.callProcess "git" [ "clone", url, "lune-temp" ]
+      Proc.callProcess "git" [ "clone", "-q", url, "lune-temp" ]
       moveAll "lune-temp/src" ("depends/" ++ repo)
       hasDepends <- Dir.doesDirectoryExist "lune-temp/depends"
       Monad.when hasDepends (moveAll "lune-temp/depends" "depends")
-      putStrLn "Successfully cloned repo"
+      putStrLn ("Installed package " ++ show repo)
+
+removeFolder :: FilePath -> IO ()
+removeFolder dir = do
+  exists <- Dir.doesDirectoryExist ("depends/" ++ dir)
+  Monad.when exists $ Dir.removePathForcibly ("depends/" ++ dir)
+  putStrLn if exists
+    then "Removed package " ++ show dir
+    else "Package " ++ show dir ++ " is not installed"
 
 moveAll :: FilePath -> FilePath -> IO ()
 moveAll dir dest = do
