@@ -92,9 +92,9 @@ Token.TokenParser
   } = lexer
 
 braces :: Parser a -> Parser a
-braces p = do
+braces parse = do
   Parsec.notFollowedBy (symbol "{-")
-  Parsec.between (symbol "{") (symbol "}") p
+  Parsec.between (symbol "{") (symbol "}") parse
 
 getLocation :: Parser Location
 getLocation = do
@@ -357,9 +357,12 @@ parseInfix :: Parser SimpleDef
 parseInfix = do
   reserved "infix"
   name <- operator
-  reserved "left" <|> reserved "right" <|> reserved "non"
-  _ <- natural
-  return (Infix name)
+  assoc <-
+    (reserved "left" >> return LeftAssoc) <|>
+    (reserved "right" >> return RightAssoc) <|>
+    (reserved "non" >> return NonAssoc)
+  prec <- fromInteger <$> natural
+  return (Infix name assoc prec)
 
 parseSyntax :: Parser SimpleDef
 parseSyntax = do
@@ -395,6 +398,7 @@ parseLocalDef = do
 parseDef :: Parser Def
 parseDef = do
   loc <- getLocation
+  input <- Parsec.getInput
   def <-
     parseAnnotation "val" Annotation <|>
     parseAnnotation "foreign" Foreign <|>
@@ -404,7 +408,10 @@ parseDef = do
     parseInfix <|>
     parseSyntax <|>
     parseDocumentation
-  return (def, loc)
+  input' <- Parsec.getInput
+  let len = length input - length input'
+  let str = removeComments Code (take len input)
+  return (def, loc, str)
 
 parsePort :: Parser Port
 parsePort = do
@@ -533,11 +540,10 @@ getInfixes = \case
 getOptable :: String -> OpTable
 getOptable = getInfixes . words . removeComments Code
 
-parseFiles :: [FilePath] -> IO (Either Parsec.ParseError [Module], OpTable)
+parseFiles :: [FilePath] -> IO (Either Parsec.ParseError [Module])
 parseFiles paths = do
   programs <- mapM readFile paths
   let ops = getOptable (unlines programs)
-  let modules = Monad.zipWithM
-        (Parsec.runParser parseModule ops)
-        paths programs
-  return (modules, ops)
+  return $ Monad.zipWithM
+    (Parsec.runParser parseModule ops)
+    paths programs

@@ -21,6 +21,7 @@ import Compiler.Desugar (desugarModules)
 import Compiler.Unalias (unaliasModule)
 import Compiler.Infer (checkModule)
 import Compiler.Generate (genModule)
+import Document.Generate (docModules)
 
 main :: IO ()
 main = do
@@ -30,6 +31,7 @@ main = do
     ["init"] -> initialise
     ["compile"] -> compile False
     ["check"] -> compile True
+    ["document"] -> document
     ["add", user, repo] -> addFolder user repo
     ["remove", dir] -> removeFolder dir
     _ -> do
@@ -37,6 +39,7 @@ main = do
       putStrLn (prog ++ " init               -- create an empty Lune project in this folder")
       putStrLn (prog ++ " compile            -- convert source code into JS and HTML")
       putStrLn (prog ++ " check              -- run the type checker without compiling")
+      putStrLn (prog ++ " document           -- convert source code into documentation markdown")
       putStrLn (prog ++ " add [user] [foo]   -- add the Github repo user/foo to dependencies")
       putStrLn (prog ++ " remove [foo]       -- remove the package foo from dependencies")
 
@@ -49,9 +52,9 @@ initialise = do
 
 compile :: Bool -> IO ()
 compile checkOnly =
-  tryIO safeGetFiles \(modNames, lunePaths, jsPaths) ->
+  tryIO (safeGetFiles True) \(modNames, lunePaths, jsPaths) ->
   try (noDuplicates modNames) \() ->
-  tryIO (fst <$> parseFiles lunePaths) \modules ->
+  tryIO (parseFiles lunePaths) \modules ->
   try (desugarModules $ Map.fromList $ zip modNames modules) \defs ->
   try (unaliasModule defs) \defs' ->
   try (checkModule defs') \() ->
@@ -62,6 +65,15 @@ compile checkOnly =
         writeFile "index.html" indexHtml
         writeFile "output.js" (genModule javascript defs')
         putStrLn "Compiled into \"output.js\""
+
+document :: IO ()
+document =
+  tryIO (safeGetFiles False) \(modNames, lunePaths, _) ->
+  try (noDuplicates modNames) \() ->
+  tryIO (parseFiles lunePaths) \modules -> do
+    let markdown = docModules $ Map.fromList (zip modNames modules)
+    writeFile "DOC.md" markdown
+    putStrLn "Compiled into \"DOC.md\""
 
 addFolder :: String -> String -> IO ()
 addFolder user repo = add
@@ -125,19 +137,20 @@ noDuplicates = Monad.void . Fold.foldrM consMaybe []
 catch :: IO a -> (Ex.IOException -> IO a) -> IO a
 catch = Ex.catch
 
-safeGetFiles :: IO (Either Error.Msg ([ModName], [FilePath], [FilePath]))
-safeGetFiles =
+safeGetFiles :: Bool -> IO (Either Error.Msg ([ModName], [FilePath], [FilePath]))
+safeGetFiles includeDepends =
   fmap Right get `catch` \e ->
     if Pre.isDoesNotExistError e
       then return Error.noSrcDirectory
       else return Error.directoryRead
   where
-    get = do
-      src <- getFiles "src"
-      packages <- Dir.listDirectory "depends"
-      let qualify p = "depends/" ++ p
-      depends <- mapM (catchGetFiles . qualify) packages
-      return (src <> Fold.fold depends)
+    get | includeDepends = do
+        src <- getFiles "src"
+        packages <- Dir.listDirectory "depends"
+        let qualify p = "depends/" ++ p
+        depends <- mapM (catchGetFiles . qualify) packages
+        return (src <> Fold.fold depends)
+      | otherwise = getFiles "src"
 
 catchGetFiles :: FilePath -> IO ([ModName], [FilePath], [FilePath])
 catchGetFiles dir = getFiles dir `catch` \_ -> return ([], [], [])

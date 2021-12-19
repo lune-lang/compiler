@@ -65,11 +65,11 @@ data SimpleDef
   | Expand Name [Name] Expr
   | Type Name Kind (Maybe Wrapper)
   | Synonym Name [Name] Type
-  | Infix Name
+  | Infix Name Assoc Int
   | Syntax Name Role
   | Documentation String
 
-type Def = (SimpleDef, Location)
+type Def = (SimpleDef, Location, String)
 
 data Assoc = LeftAssoc | RightAssoc | NonAssoc
 

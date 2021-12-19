@@ -80,7 +80,7 @@ insertType interface (name, loc) =
     else return $ Lens.over interfaceTypes ((name, loc):) interface
 
 insertDef :: [F.SimplePort] -> Insert Interface F.Def
-insertDef exports interface (def, loc) =
+insertDef exports interface (def, loc, _) =
   case def of
     F.Annotation _ _ -> return interface
     F.Foreign names _ -> Monad.foldM valueDef interface (zipRepeat names loc)
@@ -92,7 +92,7 @@ insertDef exports interface (def, loc) =
       interface'' <- valueDef interface' maker
       Monad.foldM valueDef interface'' getter
     F.Synonym name _ _ -> typeDef interface (name, loc)
-    F.Infix _ -> return interface
+    F.Infix {} -> return interface
     F.Syntax _ _ -> return interface
     F.Documentation _ -> return interface
   where
@@ -117,7 +117,7 @@ getExports m =
   Monad.foldM (addExport available) [] (F.getExports m)
   where
     available = concatMap toPort (F.getDefs m)
-    toPort (def, _) =
+    toPort (def, _, _) =
       case def of
         F.Annotation _ _ -> []
         F.Foreign names _ -> map F.ValuePort names
@@ -128,7 +128,7 @@ getExports m =
           [ F.TypePort name, F.ValuePort (fst maker) ] ++
           map (F.ValuePort . fst) (Maybe.maybeToList getter)
         F.Synonym name _ _ -> [F.TypePort name]
-        F.Infix _ -> []
+        F.Infix {} -> []
         F.Syntax _ _ -> []
         F.Documentation _ -> []
 
@@ -194,7 +194,7 @@ insertImport interfaces vars (imp, loc) =
             Monad.foldM (insertExposed modName interface) vars' exposed
 
 insertTopLevelDef :: ModName -> Insert VarMap F.Def
-insertTopLevelDef modName vars (def, loc) =
+insertTopLevelDef modName vars (def, loc, _) =
   case def of
     F.Annotation _ _ -> return vars
     F.Foreign names _ -> Monad.foldM addValue vars (zipRepeat names loc)
@@ -206,7 +206,7 @@ insertTopLevelDef modName vars (def, loc) =
       vars'' <- addValue vars' maker
       Monad.foldM addValue vars'' getter
     F.Synonym name _ _ -> addType vars (name, loc)
-    F.Infix _ -> return vars
+    F.Infix {} -> return vars
     F.Syntax _ _ -> return vars
     F.Documentation _ -> return vars
     where
@@ -235,7 +235,7 @@ desugarDefs modName defs = do
   syntax <- Reader.asks (separateSyntax . fst)
   return (Module funcs' expands foreigns types synonyms syntax)
   where
-    addDef (annos, funcs, expands, foreigns, types, synonyms) (def, loc) =
+    addDef (annos, funcs, expands, foreigns, types, synonyms) (def, loc, _) =
       case def of
         F.Annotation names tipe -> do
           let names' = map (Qualified modName) names
@@ -284,7 +284,7 @@ desugarDefs modName defs = do
           let newSynonyms = (name', args, tipe', loc) : synonyms
           return (annos, funcs, expands, foreigns, types, newSynonyms)
 
-        F.Infix _ -> return (annos, funcs, expands, foreigns, types, synonyms)
+        F.Infix {} -> return (annos, funcs, expands, foreigns, types, synonyms)
         F.Documentation _ -> return (annos, funcs, expands, foreigns, types, synonyms)
 
         F.Syntax name role -> do
@@ -478,9 +478,9 @@ noRepeatedInfix :: [F.Def] -> Desugar ()
 noRepeatedInfix =
   Monad.foldM_ addInfix []
   where
-    addInfix ops (def, loc) =
+    addInfix ops (def, loc, _) =
       case def of
-        F.Infix name
+        F.Infix name _ _
           | name `elem` ops -> Error.withLocation loc (Error.multipleInfix name)
           | otherwise -> return (name : ops)
         _ -> return ops :: Desugar [Name]
@@ -493,7 +493,7 @@ getSyntaxMap modules = do
     pair m ds = zip (repeat m) ds
     defs = Fold.fold (Map.mapWithKey pair modules)
 
-    addSyntax (roles, syntax) (modName, (def, loc)) =
+    addSyntax (roles, syntax) (modName, (def, loc, _)) =
       case def of
         F.Syntax name role ->
           let name' = Qualified modName name in
