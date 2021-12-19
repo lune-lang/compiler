@@ -24,8 +24,7 @@ indent = unlines . map ("  " ++) . lines
 
 codeHeading :: String -> String
 codeHeading str = let
-  code = unlines [ "```", str, "```" ]
-  heading = unlines [ "<h4>\n", indent code, "</h4>" ]
+  heading = unlines [ "<h4>\n", indent str, "</h4>" ]
   in indent heading
 
 docModule :: (ModName, Module) -> String
