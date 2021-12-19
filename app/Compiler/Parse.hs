@@ -103,7 +103,9 @@ withText parse = do
   input' <- Parsec.getInput
   let len = length input - length input'
   let text = take len input
-  return (result, removeComments Code text)
+  let halfTrim = reverse . dropWhile Char.isSpace
+  let trim = halfTrim . halfTrim
+  return (result, trim $ removeComments Code text)
 
 getLocation :: Parser Location
 getLocation = do
