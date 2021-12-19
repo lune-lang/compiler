@@ -14,22 +14,22 @@ docName name
   | all (`elem` opChars) name = concat [ "(", name, ")" ]
   | otherwise = name
 
-docDef :: [SimplePort] -> Def -> String
-docDef exports (def, _) = let
+docDef :: ModName -> [SimplePort] -> Def -> String
+docDef modName exports (def, _) = let
   exValue name = ValuePort name `elem` exports
   exType name = TypePort name `elem` exports
   in case def of
     Annotation names (_, tipe) ->
-      docAnnotation (filter exValue names) tipe
+      docAnnotation modName (filter exValue names) tipe
 
     Foreign names (_, tipe) ->
-      docAnnotation (filter exValue names) tipe
+      docAnnotation modName (filter exValue names) tipe
 
     Expand name args (_, body) | exValue name ->
-      docExpand name args body
+      docExpand modName name args body
 
     Type name (_, kind) Nothing | exType name ->
-      docType name kind
+      docType modName name kind
 
     Type name (_, kind) (Just (Wrapper args (_, tipe) maker getter)) | exType name -> let
       wrapped = concat [ name, " ", unwords args ]
@@ -44,40 +44,53 @@ docDef exports (def, _) = let
       getterName = maybeName =<< getter
 
       in concat
-        [ docType name kind
-        , docAnnotation (Maybe.maybeToList makerName) makerType
-        , docAnnotation (Maybe.maybeToList getterName) getterType
+        [ docType modName name kind
+        , docAnnotation modName (Maybe.maybeToList makerName) makerType
+        , docAnnotation modName (Maybe.maybeToList getterName) getterType
         ]
 
     Synonym name args (_, body) | exType name ->
-      docSynonym name args body
+      docSynonym modName name args body
 
     Documentation markdown -> indent markdown
     _ -> ""
 
-docAnnotation :: [Name] -> String -> String
-docAnnotation names tipe
+docAnnotation :: ModName -> [Name] -> String -> String
+docAnnotation modName names tipe
   | null names = ""
-  | otherwise = codeHeading $ concat
-    [ List.intercalate ", " (map docName names), " :: ", tipe ]
+  | otherwise = let
+    anchors = unlines $ map (anchorLink modName) names
+    heading = codeHeading $ concat
+      [ List.intercalate ", " (map docName names), " :: ", tipe ]
+    in anchors ++ heading
 
-docExpand :: Name -> [Name] -> String -> String
-docExpand name args body =
-  codeHeading $ concat
+docExpand :: ModName -> Name -> [Name] -> String -> String
+docExpand modName name args body = let
+  anchor = anchorLink modName name
+  heading = codeHeading $ concat
     [ "expand ", docName name, " ", unwords args, " = ", body ]
+  in anchor ++ heading
 
-docType :: Name -> String -> String
-docType name kind =
-  codeHeading $ concat
+docType :: ModName -> Name -> String -> String
+docType modName name kind = let
+  anchor = anchorLink modName name
+  heading = codeHeading $ concat
     [ "type ", docName name, " :: ", kind ]
+  in anchor ++ heading
 
-docSynonym :: Name -> [Name] -> String -> String
-docSynonym name args body =
-  codeHeading $ concat
+docSynonym :: ModName -> Name -> [Name] -> String -> String
+docSynonym modName name args body = let
+  anchor = anchorLink modName name
+  heading = codeHeading $ concat
     [ "type ", docName name, " ", unwords args, " = ", body ]
+  in anchor ++ heading
 
 indent :: String -> String
 indent = unlines . map ("  " ++) . lines
+
+anchorLink :: ModName -> Name -> String
+anchorLink modName name = concat
+  [ "<a name=\"", modName, ".", docName name, "\">"]
 
 codeHeading :: String -> String
 codeHeading str = let
@@ -89,7 +102,7 @@ docModule (modName, m) = unlines
   [ "# " ++ modName
   , "<details>"
   , "  <summary></summary>\n"
-  , concatMap (docDef $ map fst $ getExports m) (getDefs m)
+  , concatMap (docDef modName $ map fst $ getExports m) (getDefs m)
   , "</details>\n"
   ]
 
