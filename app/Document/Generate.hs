@@ -34,7 +34,7 @@ docModule (modName, m) = unlines
   , "<details>"
   , "  <summary></summary>\n"
   , concatMap docDef (getDefs m)
-  , "</details>"
+  , "</details>\n"
   ]
 
 docModules :: Map ModName Module -> String
