@@ -7,6 +7,7 @@ module Syntax.Frontend
   , Wrapper(..)
   , SimpleLocalDef(..)
   , LocalDef
+  , WithText
   , SimpleDef(..)
   , Def
   , SimplePort(..)
@@ -50,7 +51,7 @@ type Type = (SimpleType, Location)
 
 data Scheme = Forall [Name] Type
 
-data Wrapper = Wrapper [Name] Type (Name, Location) (Maybe (Name, Location))
+data Wrapper = Wrapper [Name] (WithText Type) (Name, Location) (Maybe (Name, Location))
 
 data SimpleLocalDef
   = LAnnotation [Name] Scheme
@@ -58,18 +59,20 @@ data SimpleLocalDef
 
 type LocalDef = (SimpleLocalDef, Location)
 
+type WithText a = (a, String)
+
 data SimpleDef
-  = Annotation [Name] Scheme
-  | Foreign [Name] Scheme
+  = Annotation [Name] (WithText Scheme)
+  | Foreign [Name] (WithText Scheme)
   | Func Name [Name] Expr
-  | Expand Name [Name] Expr
-  | Type Name Kind (Maybe Wrapper)
-  | Synonym Name [Name] Type
+  | Expand Name [Name] (WithText Expr)
+  | Type Name (WithText Kind) (Maybe Wrapper)
+  | Synonym Name [Name] (WithText Type)
   | Infix Name Assoc Int
   | Syntax Name Role
   | Documentation String
 
-type Def = (SimpleDef, Location, String)
+type Def = (SimpleDef, Location)
 
 data Assoc = LeftAssoc | RightAssoc | NonAssoc
 

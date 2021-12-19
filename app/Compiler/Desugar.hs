@@ -80,7 +80,7 @@ insertType interface (name, loc) =
     else return $ Lens.over interfaceTypes ((name, loc):) interface
 
 insertDef :: [F.SimplePort] -> Insert Interface F.Def
-insertDef exports interface (def, loc, _) =
+insertDef exports interface (def, loc) =
   case def of
     F.Annotation _ _ -> return interface
     F.Foreign names _ -> Monad.foldM valueDef interface (zipRepeat names loc)
@@ -117,7 +117,7 @@ getExports m =
   Monad.foldM (addExport available) [] (F.getExports m)
   where
     available = concatMap toPort (F.getDefs m)
-    toPort (def, _, _) =
+    toPort (def, _) =
       case def of
         F.Annotation _ _ -> []
         F.Foreign names _ -> map F.ValuePort names
@@ -194,7 +194,7 @@ insertImport interfaces vars (imp, loc) =
             Monad.foldM (insertExposed modName interface) vars' exposed
 
 insertTopLevelDef :: ModName -> Insert VarMap F.Def
-insertTopLevelDef modName vars (def, loc, _) =
+insertTopLevelDef modName vars (def, loc) =
   case def of
     F.Annotation _ _ -> return vars
     F.Foreign names _ -> Monad.foldM addValue vars (zipRepeat names loc)
@@ -235,16 +235,16 @@ desugarDefs modName defs = do
   syntax <- Reader.asks (separateSyntax . fst)
   return (Module funcs' expands foreigns types synonyms syntax)
   where
-    addDef (annos, funcs, expands, foreigns, types, synonyms) (def, loc, _) =
+    addDef (annos, funcs, expands, foreigns, types, synonyms) (def, loc) =
       case def of
-        F.Annotation names tipe -> do
+        F.Annotation names (tipe, _) -> do
           let names' = map (Qualified modName) names
           tipe' <- Error.annoContext names' (desugarScheme tipe)
           let keys = zipRepeat names' loc
           let newAnnos = Map.fromList (zipRepeat keys tipe') <> annos
           return (newAnnos, funcs, expands, foreigns, types, synonyms)
 
-        F.Foreign names tipe -> do
+        F.Foreign names (tipe, _) -> do
           let names' = map (Qualified modName) names
           tipe' <- Error.annoContext names' (desugarScheme tipe)
           let newForeigns = Map.fromList (zipRepeat names' tipe') <> foreigns
@@ -257,7 +257,7 @@ desugarDefs modName defs = do
           let newFuncs = (name', body', loc) : funcs
           return (annos, newFuncs, expands, foreigns, types, synonyms)
 
-        F.Expand name args body -> do
+        F.Expand name args (body, _) -> do
           let name' = Qualified modName name
           local <- Monad.foldM insertLocalValue emptyVars (zipRepeat args loc)
           body' <- Error.defContext name' $
@@ -265,12 +265,12 @@ desugarDefs modName defs = do
           let newExpands = (name', args, body', loc) : expands
           return (annos, funcs, newExpands, foreigns, types, synonyms)
 
-        F.Type name kind Nothing -> do
+        F.Type name (kind, _) Nothing -> do
           let name' = Qualified modName name
           let newTypes = Map.insert name' (kind, Nothing) types
           return (annos, funcs, expands, foreigns, newTypes, synonyms)
 
-        F.Type name kind (Just (F.Wrapper args tipe maker getter)) -> do
+        F.Type name (kind, _) (Just (F.Wrapper args (tipe, _) maker getter)) -> do
           let name' = Qualified modName name
           tipe' <- Error.defContext name' (desugarType args tipe)
           let maker' = Qualified modName (fst maker)
@@ -278,7 +278,7 @@ desugarDefs modName defs = do
           let newTypes = Map.insert name' (kind, Just (Wrapper args tipe' maker' getter')) types
           return (annos, funcs, expands, foreigns, newTypes, synonyms)
 
-        F.Synonym name args tipe -> do
+        F.Synonym name args (tipe, _) -> do
           let name' = Qualified modName name
           tipe' <- Error.defContext name' (desugarType args tipe)
           let newSynonyms = (name', args, tipe', loc) : synonyms
@@ -478,7 +478,7 @@ noRepeatedInfix :: [F.Def] -> Desugar ()
 noRepeatedInfix =
   Monad.foldM_ addInfix []
   where
-    addInfix ops (def, loc, _) =
+    addInfix ops (def, loc) =
       case def of
         F.Infix name _ _
           | name `elem` ops -> Error.withLocation loc (Error.multipleInfix name)
@@ -493,7 +493,7 @@ getSyntaxMap modules = do
     pair m ds = zip (repeat m) ds
     defs = Fold.fold (Map.mapWithKey pair modules)
 
-    addSyntax (roles, syntax) (modName, (def, loc, _)) =
+    addSyntax (roles, syntax) (modName, (def, loc)) =
       case def of
         F.Syntax name role ->
           let name' = Qualified modName name in

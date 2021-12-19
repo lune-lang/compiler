@@ -96,6 +96,15 @@ braces parse = do
   Parsec.notFollowedBy (symbol "{-")
   Parsec.between (symbol "{") (symbol "}") parse
 
+withText :: Parser a -> Parser (WithText a)
+withText parse = do
+  input <- Parsec.getInput
+  result <- parse
+  input' <- Parsec.getInput
+  let len = length input - length input'
+  let text = take len input
+  return (result, removeComments Code text)
+
 getLocation :: Parser Location
 getLocation = do
   position <- Parsec.getPosition
@@ -302,20 +311,20 @@ parseKFactor =
   (reserved "Label" >> return KLabel) <|>
   parens parseKind
 
-parseAnnotation :: String -> ([Name] -> Scheme -> a) -> Parser a
-parseAnnotation word annotation = do
+parseAnnotation :: String -> Parser a -> ([Name] -> a -> b) -> Parser b
+parseAnnotation word parse annotation = do
   reserved word
   names <- commaSep1 nameOrOperator
   reservedOp "::"
-  annotation names <$> parseScheme
+  annotation names <$> parse
 
-parseFunc :: String -> (Name -> [Name] -> Expr -> a) -> Parser a
-parseFunc word func = do
+parseFunc :: String -> Parser a -> (Name -> [Name] -> a -> b) -> Parser b
+parseFunc word parse func = do
   reserved word
   name <- nameOrOperator
   args <- Parsec.many identifierLower
   reservedOp "="
-  func name args <$> parseExpr
+  func name args <$> parse
 
 parseTypeDef :: Parser SimpleDef
 parseTypeDef = do
@@ -325,14 +334,14 @@ parseTypeDef = do
   where
     parseBase name = do
       reservedOp "::"
-      kind <- parseKind
+      kind <- withText parseKind
       wrapper <- fmap Just (parseWrapper name) <|> return Nothing
       return (Type name kind wrapper)
 
     parseSynonym name = do
       args <- Parsec.many identifierLower
       reservedOp "="
-      Synonym name args <$> parseType
+      Synonym name args <$> withText parseType
 
 parseWrapper :: Name -> Parser Wrapper
 parseWrapper name = do
@@ -340,7 +349,7 @@ parseWrapper name = do
   reserved name
   args <- Parsec.many identifierLower
   reservedOp "="
-  body <- parseType
+  body <- withText parseType
   reserved "with"
   loc <- getLocation
   wrapper <- identifierLower
@@ -391,27 +400,23 @@ parseLocalDef :: Parser LocalDef
 parseLocalDef = do
   loc <- getLocation
   def <-
-    parseAnnotation "val" LAnnotation <|>
-    parseFunc "let" LFunc
+    parseAnnotation "val" parseScheme LAnnotation <|>
+    parseFunc "let" parseExpr LFunc
   return (def, loc)
 
 parseDef :: Parser Def
 parseDef = do
   loc <- getLocation
-  input <- Parsec.getInput
   def <-
-    parseAnnotation "val" Annotation <|>
-    parseAnnotation "foreign" Foreign <|>
-    parseFunc "let" Func <|>
-    parseFunc "expand" Expand <|>
+    parseAnnotation "val" (withText parseScheme) Annotation <|>
+    parseAnnotation "foreign" (withText parseScheme) Foreign <|>
+    parseFunc "let" parseExpr Func <|>
+    parseFunc "expand" (withText parseExpr) Expand <|>
     parseTypeDef <|>
     parseInfix <|>
     parseSyntax <|>
     parseDocumentation
-  input' <- Parsec.getInput
-  let len = length input - length input'
-  let str = removeComments Code (take len input)
-  return (def, loc, str)
+  return (def, loc)
 
 parsePort :: Parser Port
 parsePort = do
