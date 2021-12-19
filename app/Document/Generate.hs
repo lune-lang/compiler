@@ -94,7 +94,7 @@ anchorLink modName name = concat
 
 codeHeading :: String -> String
 codeHeading str = let
-  heading = unlines [ "<h4>\n", indent str, "</h4>" ]
+  heading = unlines [ "<h4>\n", indent str, "</h4>\n" ]
   in indent heading
 
 docModule :: (ModName, Module) -> String
