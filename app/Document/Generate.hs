@@ -52,7 +52,7 @@ docDef modName exports (def, _) = let
     Synonym name args (_, body) | exType name ->
       docSynonym modName name args body
 
-    Documentation markdown -> indent markdown
+    Documentation markdown -> markdown
     _ -> ""
 
 docAnnotation :: ModName -> [Name] -> String -> String
@@ -85,26 +85,18 @@ docSynonym modName name args body = let
     [ "type ", docName name, " ", unwords args, " = ", body ]
   in anchor ++ heading
 
-indent :: String -> String
-indent = unlines . map ("  " ++) . lines
-
 anchorLink :: ModName -> Name -> String
 anchorLink modName name = concat
-  [ "  <a name=\"", modName, ".", docName name, "\"></a>\n"]
+  [ "<a name=\"", modName, ".", docName name, "\"></a>\n"]
 
 codeHeading :: String -> String
-codeHeading str = let
-  heading = unlines [ "<h4>\n", indent str, "</h4>\n" ]
-  in indent heading
+codeHeading str = unlines
+  [ "<h4>\n", "```", str, "```", "</h4>\n" ]
 
 docModule :: (ModName, Module) -> String
-docModule (modName, m) = unlines
-  [ "# " ++ modName
-  , "<details>"
-  , "  <summary></summary>\n"
-  , concatMap (docDef modName $ map fst $ getExports m) (getDefs m)
-  , "</details>\n"
-  ]
+docModule (modName, m) = let
+  doc = docDef modName $ map fst (getExports m)
+  in concat [ "# ", modName, "\n", concatMap doc (getDefs m) ]
 
 docModules :: Map ModName Module -> String
 docModules = concatMap docModule . Map.toList
