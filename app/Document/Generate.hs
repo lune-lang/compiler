@@ -59,7 +59,7 @@ docAnnotation :: ModName -> [Name] -> String -> String
 docAnnotation modName names tipe
   | null names = ""
   | otherwise = let
-    anchors = unlines $ map (anchorLink modName) names
+    anchors = concatMap (anchorLink modName) names
     heading = codeHeading $ concat
       [ List.intercalate ", " (map docName names), " :: ", tipe ]
     in anchors ++ heading
@@ -90,7 +90,7 @@ indent = unlines . map ("  " ++) . lines
 
 anchorLink :: ModName -> Name -> String
 anchorLink modName name = concat
-  [ "<a name=\"", modName, ".", docName name, "\">"]
+  [ "  <a name=\"", modName, ".", docName name, "\"></a>\n"]
 
 codeHeading :: String -> String
 codeHeading str = let
