@@ -12,7 +12,6 @@ import qualified Control.Monad as Monad
 import Data.Functor.Identity (Identity)
 
 import qualified Data.Map as Map
-import Data.Map (Map)
 
 import qualified Text.Parsec as Parsec
 import qualified Text.Parsec.Token as Token
@@ -22,7 +21,6 @@ import Text.Parsec (Parsec, (<|>))
 import Syntax.Common
 import Syntax.Frontend
 
-type OpTable = Map Name (Ex.Assoc, Int)
 type Parser a = Parsec String OpTable a
 
 lexerStyle :: Token.LanguageDef OpTable
@@ -68,12 +66,13 @@ lexer = Token.makeTokenParser lexerStyle
 
 identifier, operator :: Parser String
 reserved, reservedOp :: String -> Parser ()
+symbol :: String -> Parser String
 natural :: Parser Integer
 naturalOrFloat :: Parser (Either Integer Double)
 charLiteral :: Parser Char
 stringLiteral :: Parser String
 commaSep1 :: Parser a -> Parser [a]
-parens, brackets, braces :: Parser a -> Parser a
+parens, brackets :: Parser a -> Parser a
 whiteSpace :: Parser ()
 
 Token.TokenParser
@@ -81,6 +80,7 @@ Token.TokenParser
   , Token.operator
   , Token.reserved
   , Token.reservedOp
+  , Token.symbol
   , Token.natural
   , Token.naturalOrFloat
   , Token.charLiteral
@@ -88,9 +88,24 @@ Token.TokenParser
   , Token.commaSep1
   , Token.parens
   , Token.brackets
-  , Token.braces
   , Token.whiteSpace
   } = lexer
+
+braces :: Parser a -> Parser a
+braces parse = do
+  Parsec.notFollowedBy (symbol "{-")
+  Parsec.between (symbol "{") (symbol "}") parse
+
+withText :: Parser a -> Parser (WithText a)
+withText parse = do
+  input <- Parsec.getInput
+  result <- parse
+  input' <- Parsec.getInput
+  let len = length input - length input'
+  let text = take len input
+  let halfTrim = reverse . dropWhile Char.isSpace
+  let trim = halfTrim . halfTrim
+  return (result, trim $ removeComments Code text)
 
 getLocation :: Parser Location
 getLocation = do
@@ -287,7 +302,7 @@ parseKind = do
   parseKArr k <|> return k
   where
     parseKArr k1 = do
-      reservedOp "->"
+      _ <- symbol "->"
       KArr k1 <$> parseKind
 
 parseKFactor :: Parser Kind
@@ -298,20 +313,20 @@ parseKFactor =
   (reserved "Label" >> return KLabel) <|>
   parens parseKind
 
-parseAnnotation :: String -> ([Name] -> Scheme -> a) -> Parser a
-parseAnnotation word annotation = do
+parseAnnotation :: String -> Parser a -> ([Name] -> a -> b) -> Parser b
+parseAnnotation word parse annotation = do
   reserved word
   names <- commaSep1 nameOrOperator
   reservedOp "::"
-  annotation names <$> parseScheme
+  annotation names <$> parse
 
-parseFunc :: String -> (Name -> [Name] -> Expr -> a) -> Parser a
-parseFunc word func = do
+parseFunc :: String -> Parser a -> (Name -> [Name] -> a -> b) -> Parser b
+parseFunc word parse func = do
   reserved word
   name <- nameOrOperator
   args <- Parsec.many identifierLower
   reservedOp "="
-  func name args <$> parseExpr
+  func name args <$> parse
 
 parseTypeDef :: Parser SimpleDef
 parseTypeDef = do
@@ -321,14 +336,14 @@ parseTypeDef = do
   where
     parseBase name = do
       reservedOp "::"
-      kind <- parseKind
+      kind <- withText parseKind
       wrapper <- fmap Just (parseWrapper name) <|> return Nothing
       return (Type name kind wrapper)
 
     parseSynonym name = do
       args <- Parsec.many identifierLower
       reservedOp "="
-      Synonym name args <$> parseType
+      Synonym name args <$> withText parseType
 
 parseWrapper :: Name -> Parser Wrapper
 parseWrapper name = do
@@ -336,7 +351,7 @@ parseWrapper name = do
   reserved name
   args <- Parsec.many identifierLower
   reservedOp "="
-  body <- parseType
+  body <- withText parseType
   reserved "with"
   loc <- getLocation
   wrapper <- identifierLower
@@ -345,7 +360,7 @@ parseWrapper name = do
   where
     parseUnwrapper = do
       loc <- getLocation
-      reservedOp ","
+      _ <- symbol ","
       unwrapper <- identifierLower
       return (unwrapper, loc)
 
@@ -353,9 +368,12 @@ parseInfix :: Parser SimpleDef
 parseInfix = do
   reserved "infix"
   name <- operator
-  reserved "left" <|> reserved "right" <|> reserved "non"
-  _ <- natural
-  return (Infix name)
+  assoc <-
+    (reserved "left" >> return LeftAssoc) <|>
+    (reserved "right" >> return RightAssoc) <|>
+    (reserved "non" >> return NonAssoc)
+  prec <- fromInteger <$> natural
+  return (Infix name assoc prec)
 
 parseSyntax :: Parser SimpleDef
 parseSyntax = do
@@ -375,25 +393,31 @@ parseSyntax = do
       when "square-brackets" SquareBrackets <|>
       when "row-constructor" RowConstructor
 
+parseDocumentation :: Parser SimpleDef
+parseDocumentation = do
+  _ <- symbol "{-"
+  Documentation <$> Parsec.manyTill Parsec.anyChar (symbol "-}")
+
 parseLocalDef :: Parser LocalDef
 parseLocalDef = do
   loc <- getLocation
   def <-
-    parseAnnotation "val" LAnnotation <|>
-    parseFunc "let" LFunc
+    parseAnnotation "val" parseScheme LAnnotation <|>
+    parseFunc "let" parseExpr LFunc
   return (def, loc)
 
 parseDef :: Parser Def
 parseDef = do
   loc <- getLocation
   def <-
-    parseAnnotation "val" Annotation <|>
-    parseAnnotation "foreign" Foreign <|>
-    parseFunc "let" Func <|>
-    parseFunc "expand" Expand <|>
+    parseAnnotation "val" (withText parseScheme) Annotation <|>
+    parseAnnotation "foreign" (withText parseScheme) Foreign <|>
+    parseFunc "let" parseExpr Func <|>
+    parseFunc "expand" (withText parseExpr) Expand <|>
     parseTypeDef <|>
     parseInfix <|>
-    parseSyntax
+    parseSyntax <|>
+    parseDocumentation
   return (def, loc)
 
 parsePort :: Parser Port
@@ -458,8 +482,13 @@ operatorParsers combine =
         then [op] : ops
         else (op : head ops) : tail ops
 
+    convert = \case
+      LeftAssoc -> Ex.AssocLeft
+      RightAssoc -> Ex.AssocRight
+      NonAssoc -> Ex.AssocNone
+
     toParser (name, (assoc, _)) =
-      Ex.Infix (reservedOp name >> return (combine name)) assoc
+      Ex.Infix (reservedOp name >> return (combine name)) (convert assoc)
 
 parseModule :: Parser Module
 parseModule = do
@@ -474,6 +503,7 @@ parseModule = do
 data CommentState
   = Code
   | LineComment
+  | DocComment
   | BlockComment Int
 
 removeComments :: CommentState -> String -> String
@@ -481,11 +511,15 @@ removeComments = curry \case
   (_, []) -> []
 
   (Code, '-':'-':str) -> removeComments LineComment str
+  (Code, '{':'-':str) -> removeComments DocComment str
   (Code, '[':'-':str) -> removeComments (BlockComment 0) str
   (Code, c:str) -> c : removeComments Code str
 
   (LineComment, '\n':str) -> ' ' : removeComments Code str
   (LineComment, _:str) -> removeComments LineComment str
+
+  (DocComment, '-':'}':str) -> ' ' : removeComments Code str
+  (DocComment, _:str) -> removeComments DocComment str
 
   (BlockComment 0, '-':']':str) -> ' ' : removeComments Code str
   (BlockComment n, '-':']':str) -> removeComments (BlockComment $ n - 1) str
@@ -505,9 +539,9 @@ getInfixes = \case
 
   where
     parseAssoc = \case
-      "left" -> Just Ex.AssocLeft
-      "right" -> Just Ex.AssocRight
-      "non" -> Just Ex.AssocNone
+      "left" -> Just LeftAssoc
+      "right" -> Just RightAssoc
+      "non" -> Just NonAssoc
       _ -> Nothing
 
 getOptable :: String -> OpTable

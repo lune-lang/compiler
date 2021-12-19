@@ -21,7 +21,8 @@ executable lune
       Compiler.Unalias,
       Compiler.Infer,
       Compiler.Generate,
-      Compiler.Error
+      Compiler.Error,
+      Document.Generate
 
     build-depends:
       base ^>=4.14.1.0,
