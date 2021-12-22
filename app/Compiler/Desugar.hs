@@ -455,13 +455,13 @@ desugarModule interfaces modName m = do
   Reader.local (Bf.second $ const vars') $
     desugarDefs modName (F.getDefs m)
 
-desugarModules :: Map ModName F.Module -> Either Error.Msg Module
-desugarModules modules =
+desugarModules :: Bool -> Map ModName F.Module -> Either Error.Msg Module
+desugarModules checkOnly modules =
   Reader.runReader (Except.runExceptT desugar) (Map.empty, emptyVars)
   where
     desugar = do
       interfaces <- mapM getInterface modules
-      hasMain interfaces
+      Monad.unless checkOnly (hasMain interfaces)
       noRepeatedInfix (concatMap F.getDefs modules)
       syntax <- getSyntaxMap (fmap F.getDefs modules)
       Fold.fold <$> Reader.local (Bf.first $ const syntax)
