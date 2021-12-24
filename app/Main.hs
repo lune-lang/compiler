@@ -83,7 +83,7 @@ addFolder user repo = add
     add = do
       Dir.createDirectory "lune-temp"
       let url = concat [ "https://github.com/", user, "/", repo, ".git" ]
-      Proc.callProcess "git" [ "clone", "-q", url, "lune-temp" ]
+      Proc.callProcess "git" [ "clone", "-q", "--depth=1", url, "lune-temp" ]
       moveAll "lune-temp/src" ("depends/" ++ repo)
       hasDepends <- Dir.doesDirectoryExist "lune-temp/depends"
       Monad.when hasDepends (moveAll "lune-temp/depends" "depends")
