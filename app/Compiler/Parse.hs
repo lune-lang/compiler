@@ -396,7 +396,8 @@ parseSyntax = do
 parseDocumentation :: Parser SimpleDef
 parseDocumentation = do
   _ <- symbol "{-"
-  Documentation <$> Parsec.manyTill Parsec.anyChar (symbol "-}")
+  Documentation <$> Parsec.manyTill Parsec.anyChar
+    (Parsec.try $ symbol "-}")
 
 parseLocalDef :: Parser LocalDef
 parseLocalDef = do
