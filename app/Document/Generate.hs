@@ -22,7 +22,7 @@ docDef modName exports (def, _) = let
     Annotation names (_, tipe) ->
       docAnnotation modName (filter exValue names) tipe
 
-    Foreign names (_, tipe) ->
+    Foreign names (_, tipe) _ ->
       docAnnotation modName (filter exValue names) tipe
 
     Expand name args (_, body) | exValue name ->

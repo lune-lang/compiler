@@ -209,7 +209,7 @@ addSynonym (name, vars, tipe, _) synonyms =
     return (syn <> synonyms')
 
 unalias :: Module -> Unalias Module
-unalias (Module funcs expands foreigns types synonyms syntax) = do
+unalias (Module funcs expands foreigns types synonyms syntax refers) = do
   expands' <- expandMap =<< Arrange.arrange False expands
   synonyms' <- synonymMap =<< Arrange.arrange False synonyms
   Reader.local (const (expands', synonyms')) do
@@ -217,7 +217,7 @@ unalias (Module funcs expands foreigns types synonyms syntax) = do
     foreigns' <- sequence (Map.mapWithKey unaliasForeign foreigns)
     types' <- sequence (Map.mapWithKey unaliasTypeDef types)
     syntax' <- mapM unaliasSyntax syntax
-    return (Module funcs' expands foreigns' types' synonyms syntax')
+    return (Module funcs' expands foreigns' types' synonyms syntax' refers)
 
 unaliasModule :: Module -> Either Error.Msg Module
 unaliasModule m = Reader.runReader (Except.runExceptT $ unalias m) (Map.empty, Map.empty)
