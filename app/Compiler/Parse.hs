@@ -343,6 +343,7 @@ parseRefers =
     modName <- identifierUpper
     reservedOp "."
     Qualified modName <$> nameOrOperator
+  <> return []
 
 parseTypeDef :: Parser SimpleDef
 parseTypeDef = do
