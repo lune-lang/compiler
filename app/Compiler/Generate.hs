@@ -8,6 +8,7 @@ import qualified Data.Maybe as Maybe
 import Data.Function((&))
 
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 import Data.Map ((!))
 
 import Syntax.Desugared
@@ -149,6 +150,16 @@ genWrapper (Wrapper _ _ mk gt) =
       genIdentifier n
       ++ " = function(x) { return x; };\n"
 
+data Rank = Function | Referred | Constant
+  deriving (Eq, Ord)
+
+funcRank :: Module -> Identifier -> Expr -> Rank
+funcRank m name (body, _) =
+  case body of
+    Lambda _ _ -> Function
+    _ | name `Set.member` getRefers m -> Referred
+      | otherwise -> Constant
+
 genModule :: String -> Module -> String
 genModule js m = concat
   [ concatMap genModuleDef (modNames m)
@@ -158,9 +169,11 @@ genModule js m = concat
   , genIdentifier (Qualified "Main" "main"), "();"
   ]
   where
+
     funcDefs =
       getFuncs m
       & map (\(n, _, x, _) -> (n, x))
+      & List.sortOn (uncurry $ funcRank m)
       & concatMap (uncurry genFunc)
 
     wrapperDefs =
