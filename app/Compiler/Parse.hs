@@ -339,11 +339,13 @@ parseFunc word f func = do
 
 parseRefers :: Parser [Identifier]
 parseRefers =
-  reserved "refers" >> commaSep1 do
-    modName <- identifierUpper
-    reservedOp "."
-    Qualified modName <$> nameOrOperator
-  <> return []
+  parseClause <|> return []
+  where
+    parseClause =
+      reserved "refers" >> commaSep1 do
+        modName <- identifierUpper
+        reservedOp "."
+        Qualified modName <$> nameOrOperator
 
 parseTypeDef :: Parser SimpleDef
 parseTypeDef = do
