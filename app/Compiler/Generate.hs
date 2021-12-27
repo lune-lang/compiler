@@ -139,7 +139,7 @@ genModuleDef m = concat
 
 genFunc :: Identifier -> Expr -> String
 genFunc n x = concat
-  [ genIdentifier n, " = ", genExpr x, "; " ]
+  [ genIdentifier n, " = ", genExpr x, ";\n" ]
 
 genWrapper :: Wrapper -> String
 genWrapper (Wrapper _ _ mk gt) =
@@ -147,7 +147,7 @@ genWrapper (Wrapper _ _ mk gt) =
   where
     genIdentity n =
       genIdentifier n
-      ++ " = function(x) { return x; }; "
+      ++ " = function(x) { return x; };\n"
 
 genModule :: String -> Module -> String
 genModule js m = concat
