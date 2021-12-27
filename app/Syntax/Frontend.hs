@@ -63,7 +63,7 @@ type WithText a = (a, String)
 
 data SimpleDef
   = Annotation [Name] (WithText Scheme)
-  | Foreign [Name] (WithText Scheme)
+  | Foreign [Name] (WithText Scheme) [Identifier]
   | Func Name [Name] Expr
   | Expand Name [Name] (WithText Expr)
   | Type Name (WithText Kind) (Maybe Wrapper)

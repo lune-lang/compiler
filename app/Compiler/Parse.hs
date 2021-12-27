@@ -51,6 +51,7 @@ lexerStyle = Token.LanguageDef
       , "where"
       , "with"
       , "foreign"
+      , "refers"
       , "syntax"
       , "infix"
       , "any"
@@ -313,20 +314,35 @@ parseKFactor =
   (reserved "Label" >> return KLabel) <|>
   parens parseKind
 
-parseAnnotation :: String -> Parser a -> ([Name] -> a -> b) -> Parser b
-parseAnnotation word parse annotation = do
+parseAnnotation
+  :: String
+  -> (Parser Scheme -> Parser a)
+  -> ([Name] -> a -> b)
+  -> Parser b
+parseAnnotation word f annotation = do
   reserved word
   names <- commaSep1 nameOrOperator
   reservedOp "::"
-  annotation names <$> parse
+  annotation names <$> f parseScheme
 
-parseFunc :: String -> Parser a -> (Name -> [Name] -> a -> b) -> Parser b
-parseFunc word parse func = do
+parseFunc
+  :: String
+  -> (Parser Expr -> Parser a)
+  -> (Name -> [Name] -> a -> b)
+  -> Parser b
+parseFunc word f func = do
   reserved word
   name <- nameOrOperator
   args <- Parsec.many identifierLower
   reservedOp "="
-  func name args <$> parse
+  func name args <$> f parseExpr
+
+parseRefers :: Parser [Identifier]
+parseRefers =
+  reserved "refers" >> commaSep1 do
+    modName <- identifierUpper
+    reservedOp "."
+    Qualified modName <$> nameOrOperator
 
 parseTypeDef :: Parser SimpleDef
 parseTypeDef = do
@@ -403,18 +419,18 @@ parseLocalDef :: Parser LocalDef
 parseLocalDef = do
   loc <- getLocation
   def <-
-    parseAnnotation "val" parseScheme LAnnotation <|>
-    parseFunc "let" parseExpr LFunc
+    parseAnnotation "val" id LAnnotation <|>
+    parseFunc "let" id LFunc
   return (def, loc)
 
 parseDef :: Parser Def
 parseDef = do
   loc <- getLocation
   def <-
-    parseAnnotation "val" (withText parseScheme) Annotation <|>
-    parseAnnotation "foreign" (withText parseScheme) Foreign <|>
-    parseFunc "let" parseExpr Func <|>
-    parseFunc "expand" (withText parseExpr) Expand <|>
+    parseAnnotation "val" withText Annotation <|>
+    parseAnnotation "foreign" withText Foreign <*> parseRefers <|>
+    parseFunc "let" id Func <|>
+    parseFunc "expand" withText Expand <|>
     parseTypeDef <|>
     parseInfix <|>
     parseSyntax <|>
