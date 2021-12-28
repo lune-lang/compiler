@@ -13,6 +13,7 @@ import qualified Data.Foldable as Fold
 import qualified Control.Monad as Monad
 
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 import Data.Map (Map)
 
 import qualified Control.Monad.Except as Except
@@ -83,7 +84,7 @@ insertDef :: [F.SimplePort] -> Insert Interface F.Def
 insertDef exports interface (def, loc) =
   case def of
     F.Annotation _ _ -> return interface
-    F.Foreign names _ -> Monad.foldM valueDef interface (zipRepeat names loc)
+    F.Foreign names _ _ -> Monad.foldM valueDef interface (zipRepeat names loc)
     F.Func name _ _ -> valueDef interface (name, loc)
     F.Expand name _ _ -> valueDef interface (name, loc)
     F.Type name _ Nothing -> typeDef interface (name, loc)
@@ -120,7 +121,7 @@ getExports m =
     toPort (def, _) =
       case def of
         F.Annotation _ _ -> []
-        F.Foreign names _ -> map F.ValuePort names
+        F.Foreign names _ _ -> map F.ValuePort names
         F.Func name _ _ -> [F.ValuePort name]
         F.Expand name _ _ -> [F.ValuePort name]
         F.Type name _ Nothing -> [F.TypePort name]
@@ -197,7 +198,7 @@ insertTopLevelDef :: ModName -> Insert VarMap F.Def
 insertTopLevelDef modName vars (def, loc) =
   case def of
     F.Annotation _ _ -> return vars
-    F.Foreign names _ -> Monad.foldM addValue vars (zipRepeat names loc)
+    F.Foreign names _ _ -> Monad.foldM addValue vars (zipRepeat names loc)
     F.Func name _ _ -> addValue vars (name, loc)
     F.Expand name _ _ -> addValue vars (name, loc)
     F.Type name _ Nothing -> addType vars (name, loc)
@@ -227,35 +228,36 @@ separateSyntax = Map.mapWithKey separate
 
 desugarDefs :: ModName -> [F.Def] -> Desugar Module
 desugarDefs modName defs = do
-  (annos, funcs, expands, foreigns, types, synonyms) <-
-    Monad.foldM addDef (Map.empty, [], [], Map.empty, Map.empty, []) defs
+  (annos, funcs, expands, foreigns, types, synonyms, refers) <-
+    Monad.foldM addDef (Map.empty, [], [], Map.empty, Map.empty, [], Set.empty) defs
   let funcNames = map (\(n, _, _) -> n) funcs
   mapM_ (existsAnno funcNames) (Map.keys annos)
   let funcs' = mergeAnnos annos funcs
   syntax <- Reader.asks (separateSyntax . fst)
-  return (Module funcs' expands foreigns types synonyms syntax)
+  return (Module funcs' expands foreigns types synonyms syntax refers)
   where
-    addDef (annos, funcs, expands, foreigns, types, synonyms) (def, loc) =
+    addDef tuple@(annos, funcs, expands, foreigns, types, synonyms, refers) (def, loc) =
       case def of
         F.Annotation names (tipe, _) -> do
           let names' = map (Qualified modName) names
           tipe' <- Error.annoContext names' (desugarScheme tipe)
           let keys = zipRepeat names' loc
           let newAnnos = Map.fromList (zipRepeat keys tipe') <> annos
-          return (newAnnos, funcs, expands, foreigns, types, synonyms)
+          return (newAnnos, funcs, expands, foreigns, types, synonyms, refers)
 
-        F.Foreign names (tipe, _) -> do
+        F.Foreign names (tipe, _) refs -> do
           let names' = map (Qualified modName) names
           tipe' <- Error.annoContext names' (desugarScheme tipe)
           let newForeigns = Map.fromList (zipRepeat names' tipe') <> foreigns
-          return (annos, funcs, expands, newForeigns, types, synonyms)
+          let newRefers = Set.fromList refs <> refers
+          return (annos, funcs, expands, newForeigns, types, synonyms, newRefers)
 
         F.Func name args body@(_, bodyLoc) -> do
           let name' = Qualified modName name
           body' <- Error.defContext name' $
             desugarExpr (F.Lambda args body, bodyLoc)
           let newFuncs = (name', body', loc) : funcs
-          return (annos, newFuncs, expands, foreigns, types, synonyms)
+          return (annos, newFuncs, expands, foreigns, types, synonyms, refers)
 
         F.Expand name args (body, _) -> do
           let name' = Qualified modName name
@@ -263,12 +265,12 @@ desugarDefs modName defs = do
           body' <- Error.defContext name' $
             Reader.local (Bf.second (local <>)) (desugarExpr body)
           let newExpands = (name', args, body', loc) : expands
-          return (annos, funcs, newExpands, foreigns, types, synonyms)
+          return (annos, funcs, newExpands, foreigns, types, synonyms, refers)
 
         F.Type name (kind, _) Nothing -> do
           let name' = Qualified modName name
           let newTypes = Map.insert name' (kind, Nothing) types
-          return (annos, funcs, expands, foreigns, newTypes, synonyms)
+          return (annos, funcs, expands, foreigns, newTypes, synonyms, refers)
 
         F.Type name (kind, _) (Just (F.Wrapper args (tipe, _) maker getter)) -> do
           let name' = Qualified modName name
@@ -276,23 +278,23 @@ desugarDefs modName defs = do
           let maker' = Qualified modName (fst maker)
           let getter' = fmap (Qualified modName . fst) getter
           let newTypes = Map.insert name' (kind, Just (Wrapper args tipe' maker' getter')) types
-          return (annos, funcs, expands, foreigns, newTypes, synonyms)
+          return (annos, funcs, expands, foreigns, newTypes, synonyms, refers)
 
         F.Synonym name args (tipe, _) -> do
           let name' = Qualified modName name
           tipe' <- Error.defContext name' (desugarType args tipe)
           let newSynonyms = (name', args, tipe', loc) : synonyms
-          return (annos, funcs, expands, foreigns, types, newSynonyms)
+          return (annos, funcs, expands, foreigns, types, newSynonyms, refers)
 
-        F.Infix {} -> return (annos, funcs, expands, foreigns, types, synonyms)
-        F.Documentation _ -> return (annos, funcs, expands, foreigns, types, synonyms)
+        F.Infix {} -> return tuple
+        F.Documentation _ -> return tuple
 
         F.Syntax name role -> do
           (VarMap valueNames typeNames) <- Reader.asks snd
           let available = if role == NegateFunction then valueNames else typeNames
           if Qualified modName name `notElem` available
             then Error.withLocation loc (Error.notDefined name)
-            else return (annos, funcs, expands, foreigns, types, synonyms)
+            else return tuple
 
 desugarLocalDefs :: [F.LocalDef] -> Desugar [(Name, Maybe Scheme, Expr, Location)]
 desugarLocalDefs definitions = do
