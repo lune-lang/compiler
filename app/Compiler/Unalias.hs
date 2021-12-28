@@ -216,7 +216,7 @@ unalias (Module funcs expands foreigns types synonyms syntax) = do
   expands' <- expandMap =<< Arrange.noRecursion expands
   synonyms' <- synonymMap =<< Arrange.noRecursion synonyms
   Reader.local (const (expands', synonyms')) do
-    funcs' <- Arrange.recursion =<< mapM unaliasFunc funcs
+    funcs' <- Arrange.withRefers (fmap snd foreigns) =<< mapM unaliasFunc funcs
     foreigns' <- sequence (Map.mapWithKey unaliasForeign foreigns)
     types' <- sequence (Map.mapWithKey unaliasTypeDef types)
     syntax' <- mapM unaliasSyntax syntax
