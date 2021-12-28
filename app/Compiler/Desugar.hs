@@ -228,36 +228,36 @@ separateSyntax = Map.mapWithKey separate
 
 desugarDefs :: ModName -> [F.Def] -> Desugar Module
 desugarDefs modName defs = do
-  (annos, funcs, expands, foreigns, types, synonyms, refers) <-
-    Monad.foldM addDef (Map.empty, [], [], Map.empty, Map.empty, [], Set.empty) defs
+  (annos, funcs, expands, foreigns, types, synonyms) <-
+    Monad.foldM addDef (Map.empty, [], [], Map.empty, Map.empty, []) defs
   let funcNames = map (\(n, _, _) -> n) funcs
   mapM_ (existsAnno funcNames) (Map.keys annos)
   let funcs' = mergeAnnos annos funcs
   syntax <- Reader.asks (separateSyntax . fst)
-  return (Module funcs' expands foreigns types synonyms syntax refers)
+  return (Module funcs' expands foreigns types synonyms syntax)
   where
-    addDef tuple@(annos, funcs, expands, foreigns, types, synonyms, refers) (def, loc) =
+    addDef tuple@(annos, funcs, expands, foreigns, types, synonyms) (def, loc) =
       case def of
         F.Annotation names (tipe, _) -> do
           let names' = map (Qualified modName) names
           tipe' <- Error.annoContext names' (desugarScheme tipe)
           let keys = zipRepeat names' loc
           let newAnnos = Map.fromList (zipRepeat keys tipe') <> annos
-          return (newAnnos, funcs, expands, foreigns, types, synonyms, refers)
+          return (newAnnos, funcs, expands, foreigns, types, synonyms)
 
-        F.Foreign names (tipe, _) refs -> do
+        F.Foreign names (tipe, _) refers -> do
           let names' = map (Qualified modName) names
           tipe' <- Error.annoContext names' (desugarScheme tipe)
-          let newForeigns = Map.fromList (zipRepeat names' tipe') <> foreigns
-          let newRefers = Set.fromList refs <> refers
-          return (annos, funcs, expands, newForeigns, types, synonyms, newRefers)
+          let refers' = Set.fromList refers
+          let newForeigns = Map.fromList (zipRepeat names' (tipe', refers')) <> foreigns
+          return (annos, funcs, expands, newForeigns, types, synonyms)
 
         F.Func name args body@(_, bodyLoc) -> do
           let name' = Qualified modName name
           body' <- Error.defContext name' $
             desugarExpr (F.Lambda args body, bodyLoc)
           let newFuncs = (name', body', loc) : funcs
-          return (annos, newFuncs, expands, foreigns, types, synonyms, refers)
+          return (annos, newFuncs, expands, foreigns, types, synonyms)
 
         F.Expand name args (body, _) -> do
           let name' = Qualified modName name
@@ -265,12 +265,12 @@ desugarDefs modName defs = do
           body' <- Error.defContext name' $
             Reader.local (Bf.second (local <>)) (desugarExpr body)
           let newExpands = (name', args, body', loc) : expands
-          return (annos, funcs, newExpands, foreigns, types, synonyms, refers)
+          return (annos, funcs, newExpands, foreigns, types, synonyms)
 
         F.Type name (kind, _) Nothing -> do
           let name' = Qualified modName name
           let newTypes = Map.insert name' (kind, Nothing) types
-          return (annos, funcs, expands, foreigns, newTypes, synonyms, refers)
+          return (annos, funcs, expands, foreigns, newTypes, synonyms)
 
         F.Type name (kind, _) (Just (F.Wrapper args (tipe, _) maker getter)) -> do
           let name' = Qualified modName name
@@ -278,13 +278,13 @@ desugarDefs modName defs = do
           let maker' = Qualified modName (fst maker)
           let getter' = fmap (Qualified modName . fst) getter
           let newTypes = Map.insert name' (kind, Just (Wrapper args tipe' maker' getter')) types
-          return (annos, funcs, expands, foreigns, newTypes, synonyms, refers)
+          return (annos, funcs, expands, foreigns, newTypes, synonyms)
 
         F.Synonym name args (tipe, _) -> do
           let name' = Qualified modName name
           tipe' <- Error.defContext name' (desugarType args tipe)
           let newSynonyms = (name', args, tipe', loc) : synonyms
-          return (annos, funcs, expands, foreigns, types, newSynonyms, refers)
+          return (annos, funcs, expands, foreigns, types, newSynonyms)
 
         F.Infix {} -> return tuple
         F.Documentation _ -> return tuple
@@ -301,7 +301,7 @@ desugarLocalDefs definitions = do
   (annos, funcs) <- Monad.foldM addDef (Map.empty, []) definitions
   let funcNames = map (\(n, _, _) -> n) funcs
   mapM_ (existsAnno funcNames) (Map.keys annos)
-  Arrange.arrange True (mergeAnnos annos funcs)
+  Arrange.recursion (mergeAnnos annos funcs)
   where
     addDef defs (def, loc) =
       case def of
