@@ -393,12 +393,12 @@ wrapperEnv n (_, w) =
         return (Env envTypes Map.empty Map.empty)
 
 checkModule :: Module -> Either Error.Msg ()
-checkModule (Module funcs _ foreigns types _ syntaxDefs _) =
+checkModule (Module funcs _ foreigns types _ syntaxDefs) =
   State.evalState (Reader.runReaderT (Except.runExceptT check) env) state
   where
     state = InferState [] (foldr Cons undefined fresh)
 
-    envTypes = fmap convertScheme foreigns
+    envTypes = fmap (convertScheme . fst) foreigns
     envKinds = fmap fst types
     envSyntax = fmap (Bf.first convertType) syntaxDefs
     env = Env envTypes envKinds envSyntax
@@ -407,7 +407,7 @@ checkModule (Module funcs _ foreigns types _ syntaxDefs _) =
     numbers = concatMap (replicate $ length prefixes) ([0..] :: [Int])
     fresh = zipWith (++) (cycle prefixes) (map show numbers)
 
-    checkForeign n (D.Forall _ t) =
+    checkForeign n (D.Forall _ t, _) =
       Error.defContext n $ Monad.void (checkKind KType t)
 
     check = do

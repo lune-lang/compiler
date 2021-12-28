@@ -4,7 +4,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes #-}
 
-module Compiler.Arrange (arrange) where
+module Compiler.Arrange (recursion, noRecursion, withRefers) where
 
 import qualified Data.Maybe as Maybe
 import qualified Data.List as List
@@ -38,7 +38,19 @@ instance Variable Identifier where
   fromIdentifier = Set.singleton
   unqualified = Unqualified
 
-class Variable a => FreeVars a b where
+class Expression a where
+  isConstant :: a -> Bool
+
+instance Expression Expr where
+  isConstant (expr, _) =
+    case expr of
+      Lambda _ _ -> False
+      _ -> True
+
+instance Expression Type where
+  isConstant _ = False
+
+class (Variable a, Expression b) => FreeVars a b where
   freeVars :: b -> Set a
 
 instance Variable a => FreeVars a Expr where
@@ -87,14 +99,54 @@ getOrder allowRecursion refs
     roots = Map.keysSet (Map.filterWithKey isRoot refs)
     rest = Bf.first (\\ roots) <$> foldr Map.delete refs roots
 
-arrange :: (FreeVars a b) => Bool -> [(a, c, b, Location)] -> Arrange [(a, c, b, Location)]
-arrange allowRecursion funcs = do
+setConcatMap :: (Ord a) => (a -> Set a) -> Set a -> Set a
+setConcatMap f = Set.fold (<>) Set.empty . Set.map f
+
+internalVars
+  :: (FreeVars a b)
+  => Map a (Set a)
+  -> [(a, c, b, Location)]
+  -> b
+  -> Set a
+internalVars refers funcs t =
+  setConcatMap vars (freeVars t)
+  where
+    names = map (\(n, _, _, _) -> n) funcs
+
+    vars n
+      | n `elem` names = Set.singleton n
+      | isConstant t, Just refs <- Map.lookup n refers = setConcatMap vars refs
+      | otherwise = Set.empty
+
+arrange
+  :: (FreeVars a b)
+  => Bool
+  -> Map a (Set a)
+  -> [(a, c, b, Location)]
+  -> Arrange [(a, c, b, Location)]
+arrange allowRecursion refers funcs = do
   order <- getOrder allowRecursion referenceMap
   let position name = Maybe.fromMaybe 0 (List.elemIndex name order)
   return $ List.sortOn (position . nameOf) funcs
   where
     nameOf (n, _, _, _) = n
-    vars = Set.filter (`elem` map nameOf funcs) . freeVars
+
+    vars = internalVars refers funcs
+
     referenceMap =
       map (\(n, _, t, loc) -> (n, (vars t, loc))) funcs
       & Map.fromList
+
+recursion, noRecursion
+  :: (FreeVars a b)
+  => [(a, c, b, Location)]
+  -> Arrange [(a, c, b, Location)]
+recursion = arrange True Map.empty
+noRecursion = arrange False Map.empty
+
+withRefers
+  :: (FreeVars a b)
+  => Map a (Set a)
+  -> [(a, c, b, Location)]
+  -> Arrange [(a, c, b, Location)]
+withRefers = arrange True
