@@ -169,7 +169,6 @@ genModule js m = concat
   , genIdentifier (Qualified "Main" "main"), "();"
   ]
   where
-
     funcDefs =
       getFuncs m
       & map (\(n, _, x, _) -> (n, x))
