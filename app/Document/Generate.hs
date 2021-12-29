@@ -90,8 +90,8 @@ anchorLink modName name = concat
   [ "<a name=\"", modName, ".", docName name, "\"></a>\n"]
 
 codeHeading :: String -> String
-codeHeading str = unlines
-  [ "<h4>\n", "```", str, "```", "</h4>\n" ]
+codeHeading str = concat
+  [ "<h4>\n\n", "`", str, "`\n", "</h4>\n\n" ]
 
 docModule :: (ModName, Module) -> String
 docModule (modName, m) = let
