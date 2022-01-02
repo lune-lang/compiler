@@ -68,7 +68,7 @@ docDef modName exports (def, _) = let
     Synonym name args (_, body) | exType name ->
       docSynonym modName name args body
 
-    Documentation markdown -> markdown
+    Documentation markdown -> markdown ++ "\n"
     _ -> ""
 
 docAnnotation :: ModName -> [Name] -> String -> String
