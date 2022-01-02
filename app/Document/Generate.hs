@@ -21,7 +21,7 @@ codeBlock :: String -> String
 codeBlock text = unlines [ "```", text, "```" ]
 
 spacesBefore :: [String] -> String
-spacesBefore xs = \case
+spacesBefore = \case
   [] -> ""
   xs -> " " ++ unwords xs
 
