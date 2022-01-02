@@ -1,3 +1,5 @@
+{-# LANGUAGE LambdaCase #-}
+
 module Document.Generate (docModules) where
 
 import qualified Data.List as List
@@ -17,6 +19,11 @@ h4 text = concat [ "#### ", text, "\n" ]
 
 codeBlock :: String -> String
 codeBlock text = unlines [ "```", text, "```" ]
+
+spacesBefore :: [String] -> String
+spacesBefore xs = \case
+  [] -> ""
+  xs -> " " ++ unwords xs
 
 docName :: Name -> String
 docName name
@@ -77,7 +84,7 @@ docExpand :: ModName -> Name -> [Name] -> String -> String
 docExpand modName name args body = let
   anchor = anchorLink modName name
   heading = h4 (docName name)
-  code = codeBlock $ concat [ "expand ", docName name, " ", unwords args, " = ", body ]
+  code = codeBlock $ concat [ "expand ", docName name, spacesBefore args, " = ", body ]
   in concat [ anchor, heading, code ]
 
 docType :: ModName -> Name -> String -> String
@@ -91,7 +98,7 @@ docSynonym :: ModName -> Name -> [Name] -> String -> String
 docSynonym modName name args body = let
   anchor = anchorLink modName name
   heading = h4 (docName name)
-  code = codeBlock $ concat [ "type ", docName name, " ", unwords args, " = ", body ]
+  code = codeBlock $ concat [ "type ", docName name, spacesBefore args, " = ", body ]
   in concat [ anchor, heading, code ]
 
 anchorLink :: ModName -> Name -> String
