@@ -40,7 +40,7 @@ docDef modName exports (def, _) = let
       docAnnotation modName (filter exValue names) tipe
 
     Expand name args (_, body) | exValue name ->
-      docSynonym "expand" modName name args body
+      docExpand modName name args body
 
     Type name (_, kind) Nothing | exType name ->
       docType modName name kind
@@ -64,7 +64,7 @@ docDef modName exports (def, _) = let
         ]
 
     Synonym name args (_, body) | exType name ->
-      docSynonym "type" modName name args body
+      docSynonym modName name args body
 
     Documentation markdown -> markdown ++ "\n"
     _ -> ""
@@ -73,28 +73,38 @@ docAnnotation :: ModName -> [Name] -> String -> String
 docAnnotation modName names tipe
   | null names = ""
   | otherwise = let
-    anchors = concatMap (anchorLink modName) names
+    anchors = concatMap (anchorVal modName) names
     heading = h4 $ "val " ++ List.intercalate ", " (map docName names)
     code = codeBlock (":: " ++ tipe)
     in concat [ anchors, heading, code ]
 
+docExpand :: ModName -> Name -> [Name] -> String -> String
+docExpand modName name args body = let
+  anchor = anchorVal modName name
+  heading = h4 ("expand " ++ docName name)
+  code = codeBlock $ concat [ docName name, spacesBefore args, " = ", body ]
+  in concat [ anchor, heading, code ]
+
 docType :: ModName -> Name -> String -> String
 docType modName name kind = let
-  anchor = anchorLink modName name
+  anchor = anchorType modName name
   heading = h4 ("type " ++ docName name)
   code = codeBlock (":: " ++ kind)
   in concat [ anchor, heading, code ]
 
-docSynonym :: String -> ModName -> Name -> [Name] -> String -> String
-docSynonym word modName name args body = let
-  anchor = anchorLink modName name
-  heading = h4 $ concat [ word, " ", docName name ]
+docSynonym :: ModName -> Name -> [Name] -> String -> String
+docSynonym modName name args body = let
+  anchor = anchorType modName name
+  heading = h4 ("type " ++ docName name)
   code = codeBlock $ concat [ docName name, spacesBefore args, " = ", body ]
   in concat [ anchor, heading, code ]
 
-anchorLink :: ModName -> Name -> String
-anchorLink modName name = concat
+anchorVal :: ModName -> Name -> String
+anchorVal modName name = concat
   [ "<a name=\"", modName, ".", docName name, "\"></a>\n"]
+
+anchorType :: ModName -> Name -> String
+anchorType modName = anchorVal ("type_" ++ modName)
 
 docModule :: (ModName, Module) -> String
 docModule (modName, m) = let
