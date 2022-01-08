@@ -107,7 +107,7 @@ anchorVal :: Name -> String
 anchorVal = anchorLink . docName
 
 anchorType :: Name -> String
-anchorType = anchorLink . ("type_" ++) . docName
+anchorType = anchorLink . ("type-" ++) . docName
 
 replaceFirst :: String -> FilePath -> FilePath
 replaceFirst dir path =
