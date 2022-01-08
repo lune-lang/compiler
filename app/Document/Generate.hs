@@ -118,7 +118,7 @@ replaceFirst dir path =
 docModule :: (ModName, FilePath, Module) -> (FilePath, String)
 docModule (modName, path, m) = let
   path' = replaceFirst "doc" (File.replaceExtension path "md")
-  heading = h1 ("module " ++ modName)
+  heading = h1 modName
   doc = docDef $ map fst (getExports m)
   defs = concatMap doc (getDefs m)
   in (path', heading ++ defs)
