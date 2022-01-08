@@ -31,7 +31,8 @@ executable lune
       mtl,
       lens,
       directory,
-      process
+      process,
+      filepath
 
     ghc-options:      -Wall
     hs-source-dirs:   app

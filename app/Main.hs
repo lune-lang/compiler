@@ -3,7 +3,6 @@
 
 module Main (main) where
 
-import qualified Data.List as List
 import qualified Data.Foldable as Fold
 import qualified Control.Monad as Monad
 import qualified Control.Exception as Ex
@@ -14,6 +13,8 @@ import qualified Data.Map as Map
 import qualified System.Directory as Dir
 import qualified System.Directory.Internal.Prelude as Pre
 import qualified System.Process as Proc
+import qualified System.FilePath as File
+import System.FilePath ((</>), (<.>))
 
 import qualified Compiler.Error as Error
 import Compiler.Parse (parseFiles)
@@ -45,9 +46,8 @@ main = do
 
 initialise :: IO ()
 initialise = do
-  Dir.createDirectory "src"
-  Dir.createDirectory "depends"
-  writeFile "src/Main.lune" ""
+  Dir.createDirectoryIfMissing True "depends"
+  createWriteFile "src/Main.lune" ""
   putStrLn "Lune project initialised"
 
 compile :: Bool -> IO ()
@@ -71,9 +71,9 @@ document =
   tryIO (safeGetFiles False) \(modNames, lunePaths, _) ->
   try (noDuplicates modNames) \() ->
   tryIO (parseFiles lunePaths) \modules -> do
-    let markdown = docModules $ Map.fromList (zip modNames modules)
-    writeFile "DOC.md" markdown
-    putStrLn "Compiled into \"DOC.md\""
+    let markdown = docModules (zip3 modNames lunePaths modules)
+    mapM_ (uncurry createWriteFile) markdown
+    putStrLn "Created markdown files"
 
 addFolder :: String -> String -> IO ()
 addFolder user repo = add
@@ -82,17 +82,17 @@ addFolder user repo = add
   where
     add = do
       Dir.createDirectory "lune-temp"
-      let url = concat [ "https://github.com/", user, "/", repo, ".git" ]
+      let url = "https://github.com" </> user </> repo <.> "git"
       Proc.callProcess "git" [ "clone", "-q", "--depth=1", url, "lune-temp" ]
-      moveAll "lune-temp/src" ("depends/" ++ repo)
+      moveAll "lune-temp/src" ("depends" </> repo)
       hasDepends <- Dir.doesDirectoryExist "lune-temp/depends"
       Monad.when hasDepends (moveAll "lune-temp/depends" "depends")
       putStrLn ("Installed package " ++ show repo)
 
 removeFolder :: FilePath -> IO ()
 removeFolder dir = do
-  exists <- Dir.doesDirectoryExist ("depends/" ++ dir)
-  Monad.when exists $ Dir.removePathForcibly ("depends/" ++ dir)
+  exists <- Dir.doesDirectoryExist ("depends" </> dir)
+  Monad.when exists $ Dir.removePathForcibly ("depends" </> dir)
   putStrLn if exists
     then "Removed package " ++ show dir
     else "Package " ++ show dir ++ " is not installed"
@@ -101,7 +101,7 @@ moveAll :: FilePath -> FilePath -> IO ()
 moveAll dir dest = do
   paths <- Dir.listDirectory dir
   Dir.createDirectoryIfMissing True dest
-  let move path = Dir.renamePath (dir ++ "/" ++ path) (dest ++ "/" ++ path)
+  let move path = Dir.renamePath (dir </> path) (dest </> path)
   mapM_ move paths
 
 indexHtml :: String
@@ -125,6 +125,11 @@ tryIO action f = do
   result <- action
   try result f
 
+createWriteFile :: FilePath -> String -> IO ()
+createWriteFile path contents = do
+  Dir.createDirectoryIfMissing True (File.takeDirectory path)
+  writeFile path contents
+
 type ModName = String
 
 noDuplicates :: [ModName] -> Either Error.Msg ()
@@ -147,8 +152,7 @@ safeGetFiles includeDepends =
     get | includeDepends = do
         src <- getFiles "src"
         packages <- Dir.listDirectory "depends"
-        let qualify p = "depends/" ++ p
-        depends <- mapM (catchGetFiles . qualify) packages
+        depends <- mapM (catchGetFiles . ("depends" </>)) packages
         return (src <> Fold.fold depends)
       | otherwise = getFiles "src"
 
@@ -158,10 +162,10 @@ catchGetFiles dir = getFiles dir `catch` \_ -> return ([], [], [])
 getFiles :: FilePath -> IO ([ModName], [FilePath], [FilePath])
 getFiles dir = do
   paths <- Dir.listDirectory dir
-  let subDirs = filter ('.' `notElem`) paths
-  let lunePaths = filter (".lune" `List.isSuffixOf`) paths
-  let jsPaths = filter (".js" `List.isSuffixOf`) paths
-  let modNames = map (dropEnd 5) lunePaths
+  let subDirs = filter (not . File.hasExtension) paths
+  let lunePaths = filter ("lune" `File.isExtensionOf`) paths
+  let jsPaths = filter ("js" `File.isExtensionOf`) paths
+  let modNames = map File.dropExtension lunePaths
   (innerModNames, innerLunePaths, innerJsPaths) <-
     Fold.fold <$> mapM getFiles' subDirs
   let lunePaths' = map qualify lunePaths ++ innerLunePaths
@@ -169,8 +173,7 @@ getFiles dir = do
   let modNames' = modNames ++ innerModNames
   return (modNames', lunePaths', jsPaths')
   where
-    dropEnd x = reverse . drop x . reverse
-    qualify p = dir ++ "/" ++ p
+    qualify p = dir </> p
     getFiles' d = do
       (modNames, lunePaths, jsPaths) <- getFiles (qualify d)
       return (map ((d ++ "_") ++) modNames, lunePaths, jsPaths)
