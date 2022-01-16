@@ -101,9 +101,10 @@ continueExpr :: Expr -> Unalias Expr
 continueExpr expr@(_, loc) =
   case fst expr of
     DefIn name tipe x1 x2 -> do
+      tipe' <- mapM unaliasType tipe
       x1' <- unaliasExpr x1
       x2' <- unaliasExpr x2
-      return (DefIn name tipe x1' x2', loc)
+      return (DefIn name tipe' x1' x2', loc)
 
     Lambda arg x -> do
       x' <- unaliasExpr x

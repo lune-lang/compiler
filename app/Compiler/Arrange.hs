@@ -71,6 +71,7 @@ instance Variable a => FreeVars a Expr where
         (freeVars body)
 
       Call func arg -> freeVars func <> freeVars arg
+      Annotate value _ -> freeVars value
 
 instance FreeVars Identifier Type where
   freeVars (tipe, _) =

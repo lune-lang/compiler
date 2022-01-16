@@ -1,7 +1,10 @@
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE PatternSynonyms #-}
+
 module Syntax.Inferred
   ( Origin(..)
-  , Type(..)
-  , Scheme(..)
+  , Type(.., TCall2, TCall3)
+  , escape
   ) where
 
 import Syntax.Common
@@ -14,6 +17,16 @@ data Type
   | TVar (Name, Origin)
   | TLabel Label
   | TCall Type Type
+  | TAny Name Type
   deriving (Eq)
 
-data Scheme = Forall [Name] Type
+escape :: Type -> Type
+escape = \case
+  TAny _ t -> escape t
+  t -> t
+
+pattern TCall2 :: Type -> Type -> Type -> Type
+pattern TCall2 t1 t2 t3 = TCall (TCall t1 t2) t3
+
+pattern TCall3 :: Type -> Type -> Type -> Type -> Type
+pattern TCall3 t1 t2 t3 t4 = TCall (TCall2 t1 t2 t3) t4

@@ -440,7 +440,6 @@ desugarType as (tipe, loc) =
       return (TCall func' arg', loc)
 
     F.TAny [] t -> desugarType as t
-
     F.TAny (var : vars) t -> do
       t' <- desugarType (var : as) (F.TAny vars t, loc)
       return (TAny var t', loc)

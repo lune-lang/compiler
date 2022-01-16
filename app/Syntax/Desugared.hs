@@ -25,6 +25,7 @@ data SimpleExpr
   | DefIn Name (Maybe Type) Expr Expr
   | Lambda Name Expr
   | Call Expr Expr
+  | Annotate Expr Type
   deriving (Show)
 
 type Expr = (SimpleExpr, Location)
