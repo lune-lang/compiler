@@ -5,7 +5,6 @@ module Syntax.Desugared
   , Expr
   , SimpleType(..)
   , Type
-  , Scheme(..)
   , Wrapper(..)
   , Module(..)
   ) where
@@ -23,7 +22,7 @@ data SimpleExpr
   | String String
   | Label Label
   | Identifier Identifier
-  | DefIn Name (Maybe Scheme) Expr Expr
+  | DefIn Name (Maybe Type) Expr Expr
   | Lambda Name Expr
   | Call Expr Expr
   deriving (Show)
@@ -35,19 +34,17 @@ data SimpleType
   | TVar Name
   | TLabel Label
   | TCall Type Type
+  | TAny [Name] Type
   deriving (Eq, Show)
 
 type Type = (SimpleType, Location)
 
-data Scheme = Forall [Name] Type
-  deriving (Show)
-
 data Wrapper = Wrapper [Name] Type Identifier (Maybe Identifier)
 
 data Module = Module
-  { getFuncs :: [(Identifier, Maybe Scheme, Expr, Location)]
+  { getFuncs :: [(Identifier, Maybe Type, Expr, Location)]
   , getExpands :: [(Identifier, [Name], Expr, Location)]
-  , getForeigns :: Map Identifier (Scheme, Set Identifier)
+  , getForeigns :: Map Identifier (Type, Set Identifier)
   , getTypes :: Map Identifier (Kind, Maybe Wrapper)
   , getSynonyms :: [(Identifier, [Name], Type, Location)]
   , getSyntax :: Map Role (Either Type Expr)

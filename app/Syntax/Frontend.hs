@@ -3,7 +3,6 @@ module Syntax.Frontend
   , Expr
   , SimpleType(..)
   , Type
-  , Scheme(..)
   , Wrapper(..)
   , SimpleLocalDef(..)
   , LocalDef
@@ -46,15 +45,14 @@ data SimpleType
   | TRecord Type
   | TVariant Type
   | TCall Type Type
+  | TAny [Name] Type
 
 type Type = (SimpleType, Location)
-
-data Scheme = Forall [Name] Type
 
 data Wrapper = Wrapper [Name] (WithText Type) (Name, Location) (Maybe (Name, Location))
 
 data SimpleLocalDef
-  = LAnnotation [Name] Scheme
+  = LAnnotation [Name] Type
   | LFunc Name [Name] Expr
 
 type LocalDef = (SimpleLocalDef, Location)
@@ -62,8 +60,8 @@ type LocalDef = (SimpleLocalDef, Location)
 type WithText a = (a, String)
 
 data SimpleDef
-  = Annotation [Name] (WithText Scheme)
-  | Foreign [Name] (WithText Scheme) [Identifier]
+  = Annotation [Name] (WithText Type)
+  | Foreign [Name] (WithText Type) [Identifier]
   | Func Name [Name] Expr
   | Expand Name [Name] (WithText Expr)
   | Type Name (WithText Kind) (Maybe Wrapper)
