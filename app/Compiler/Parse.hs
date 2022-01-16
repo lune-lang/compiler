@@ -261,11 +261,21 @@ parseTVariant = do
   row <- brackets parseType
   return (TVariant row, loc)
 
+parseTAny :: Parser Type
+parseTAny = do
+  loc <- getLocation
+  reserved "any"
+  vars <- Parsec.many1 identifierLower
+  reservedOp "."
+  t <- parseType
+  return (TAny vars t, loc)
+
 parseTFactor :: Parser Type
 parseTFactor =
   parseIdentifier TLabel TCon <|>
   parseTRecord <|>
   parseTVariant <|>
+  parseTAny <|>
   parens parseType
 
 parseTCallFactor :: Parser Type
@@ -284,18 +294,6 @@ parseType = do
   loc <- getLocation
   ops <- operatorParsers \n x y -> (TOperator n x y, loc)
   Ex.buildExpressionParser ops parseTCallFactor
-
-parseAny :: Parser Scheme
-parseAny = do
-  reserved "any"
-  vars <- Parsec.many1 identifierLower
-  reservedOp "."
-  Forall vars <$> parseType
-
-parseScheme :: Parser Scheme
-parseScheme =
-  parseAny <|>
-  fmap (Forall []) parseType
 
 parseKind :: Parser Kind
 parseKind = do
@@ -316,14 +314,14 @@ parseKFactor =
 
 parseAnnotation
   :: String
-  -> (Parser Scheme -> Parser a)
+  -> (Parser Type -> Parser a)
   -> ([Name] -> a -> b)
   -> Parser b
 parseAnnotation word f annotation = do
   reserved word
   names <- commaSep1 nameOrOperator
   reservedOp "::"
-  annotation names <$> f parseScheme
+  annotation names <$> f parseType
 
 parseFunc
   :: String
