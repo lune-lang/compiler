@@ -240,14 +240,14 @@ desugarDefs modName defs = do
       case def of
         F.Annotation names (tipe, _) -> do
           let names' = map (Qualified modName) names
-          tipe' <- Error.annoContext names' (desugarScheme tipe)
+          tipe' <- Error.annoContext names' (desugarType [] tipe)
           let keys = zipRepeat names' loc
           let newAnnos = Map.fromList (zipRepeat keys tipe') <> annos
           return (newAnnos, funcs, expands, foreigns, types, synonyms)
 
         F.Foreign names (tipe, _) refers -> do
           let names' = map (Qualified modName) names
-          tipe' <- Error.annoContext names' (desugarScheme tipe)
+          tipe' <- Error.annoContext names' (desugarType [] tipe)
           let refers' = Set.fromList refers
           let newForeigns = Map.fromList (zipRepeat names' (tipe', refers')) <> foreigns
           return (annos, funcs, expands, newForeigns, types, synonyms)
@@ -296,7 +296,7 @@ desugarDefs modName defs = do
             then Error.withLocation loc (Error.notDefined name)
             else return tuple
 
-desugarLocalDefs :: [F.LocalDef] -> Desugar [(Name, Maybe Scheme, Expr, Location)]
+desugarLocalDefs :: [F.LocalDef] -> Desugar [(Name, Maybe Type, Expr, Location)]
 desugarLocalDefs definitions = do
   (annos, funcs) <- Monad.foldM addDef (Map.empty, []) definitions
   let funcNames = map (\(n, _, _) -> n) funcs
@@ -306,7 +306,7 @@ desugarLocalDefs definitions = do
     addDef defs (def, loc) =
       case def of
         F.LAnnotation names tipe -> do
-          tipe' <- desugarScheme tipe
+          tipe' <- desugarType [] tipe
           let keys = zipRepeat names loc
           let annos = Map.fromList (zipRepeat keys tipe')
           return $ Bf.first (annos <>) defs
@@ -320,7 +320,7 @@ existsAnno funcs (name, loc)
   | name `elem` funcs = return ()
   | otherwise = Error.withLocation loc (Error.annotation name)
 
-mergeAnnos :: Ord a => Map (a, Location) Scheme -> [(a, Expr, Location)] -> [(a, Maybe Scheme, Expr, Location)]
+mergeAnnos :: Ord a => Map (a, Location) Type -> [(a, Expr, Location)] -> [(a, Maybe Type, Expr, Location)]
 mergeAnnos annos = map \(name, body, loc) ->
   (name, Map.lookup name (Map.mapKeys fst annos), body, loc)
 
@@ -400,10 +400,6 @@ desugarExpr (expr, loc) =
           Nothing -> Error.withLocation loc (Error.notDefined name)
           Just sub -> withLoc $ f (Identifier sub)
 
-desugarScheme :: F.Scheme -> Desugar Scheme
-desugarScheme (F.Forall as tipe) =
-  Forall as <$> desugarType as tipe
-
 desugarType :: [Name] -> F.Type -> Desugar Type
 desugarType as (tipe, loc) =
   case tipe of
@@ -442,6 +438,10 @@ desugarType as (tipe, loc) =
       func' <- desugarType as func
       arg' <- desugarType as arg
       return (TCall func' arg', loc)
+
+    F.TAny vars t -> do
+      t' <- desugarType (as ++ vars) t
+      return (TAny vars t', loc)
 
   where
     ifDefined name f = do
