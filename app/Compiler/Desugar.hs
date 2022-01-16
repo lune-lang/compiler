@@ -439,9 +439,11 @@ desugarType as (tipe, loc) =
       arg' <- desugarType as arg
       return (TCall func' arg', loc)
 
-    F.TAny vars t -> do
-      t' <- desugarType (as ++ vars) t
-      return (TAny vars t', loc)
+    F.TAny [] t -> desugarType as t
+
+    F.TAny (var : vars) t -> do
+      t' <- desugarType (var : as) (F.TAny vars t, loc)
+      return (TAny var t', loc)
 
   where
     ifDefined name f = do

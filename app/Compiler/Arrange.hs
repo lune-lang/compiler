@@ -79,6 +79,7 @@ instance FreeVars Identifier Type where
       TVar _ -> Set.empty
       TLabel _ -> Set.empty
       TCall func arg -> freeVars func <> freeVars arg
+      TAny _ t -> freeVars t
 
 getOrder :: Variable a => Bool -> Map a (Set a, Location) -> Arrange [a]
 getOrder allowRecursion refs

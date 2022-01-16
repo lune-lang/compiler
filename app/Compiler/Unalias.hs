@@ -61,10 +61,15 @@ applyType subst tipe@(_, loc) =
     TCon _ -> tipe
     TLabel _ -> tipe
     TVar var -> Maybe.fromMaybe tipe (Map.lookup var subst)
+
     TCall t1 t2 -> let
       t1' = applyType subst t1
       t2' = applyType subst t2
       in (TCall t1' t2', loc)
+
+    TAny var t -> let
+      t' = applyType (Map.delete var subst) t
+      in (TAny var t', loc)
 
 getExprFunc :: Expr -> Maybe (Identifier, Location)
 getExprFunc (expr, loc) =
@@ -155,20 +160,17 @@ unaliasType tipe = do
               args' <- mapM unaliasType args
               return $ applyType (Map.fromList $ zip vars args') replacement
 
-unaliasScheme :: Scheme -> Unalias Scheme
-unaliasScheme (Forall vars tipe) = Forall vars <$> unaliasType tipe
-
-unaliasFunc :: (Identifier, Maybe Scheme, Expr, Location) -> Unalias (Identifier, Maybe Scheme, Expr, Location)
+unaliasFunc :: (Identifier, Maybe Type, Expr, Location) -> Unalias (Identifier, Maybe Type, Expr, Location)
 unaliasFunc (name, tipe, body, loc) =
   Error.annoContext [name] do
-    tipe' <- mapM unaliasScheme tipe
+    tipe' <- mapM unaliasType tipe
     body' <- unaliasExpr body
     return (name, tipe', body', loc)
 
-unaliasForeign :: Identifier -> (Scheme, Set Identifier) -> Unalias (Scheme, Set Identifier)
+unaliasForeign :: Identifier -> (Type, Set Identifier) -> Unalias (Type, Set Identifier)
 unaliasForeign name (tipe, refers) = do
   Error.annoContext [name] do
-    tipe' <- unaliasScheme tipe
+    tipe' <- unaliasType tipe
     return (tipe', refers)
 
 unaliasWrapper :: Wrapper -> Unalias Wrapper

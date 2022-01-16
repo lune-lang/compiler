@@ -34,7 +34,7 @@ data SimpleType
   | TVar Name
   | TLabel Label
   | TCall Type Type
-  | TAny [Name] Type
+  | TAny Name Type
   deriving (Eq, Show)
 
 type Type = (SimpleType, Location)
