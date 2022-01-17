@@ -44,7 +44,7 @@ class Expression a where
 instance Expression Expr where
   isConstant (expr, _) =
     case expr of
-      Lambda _ _ -> False
+      Lambda {} -> False
       _ -> True
 
 instance Expression Type where
@@ -67,11 +67,11 @@ instance Variable a => FreeVars a Expr where
       DefIn name _ value body -> Set.delete (unqualified name)
         (freeVars value <> freeVars body)
 
-      Lambda name body -> Set.delete (unqualified name)
+      Lambda name _ body -> Set.delete (unqualified name)
         (freeVars body)
 
       Call func arg -> freeVars func <> freeVars arg
-      Annotate value _ -> freeVars value
+      Annotate _ -> Set.empty
 
 instance FreeVars Identifier Type where
   freeVars (tipe, _) =

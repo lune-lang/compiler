@@ -43,6 +43,7 @@ module Compiler.Error
   , unification
   , kindUnification
   , noLabel
+  , unsure
   , withLocation
   , defContext
   , annoContext
@@ -255,6 +256,9 @@ noLabel t1 t2 = Except.throwError $ concat
   , "* ", prettyType TypeOuter t2
   ]
 
+unsure :: (MonadError String m) => m b
+unsure = Except.throwError "something went wrong"
+
 withLocation :: (Functor m) => Location -> ExceptT String m a -> ExceptT Msg m a
 withLocation (file, line, column) = Except.withExceptT
   \e -> Msg $ concat [ show file, " (line ", show line, ", column ", show column, "):\n", e ]
@@ -275,7 +279,14 @@ data TypeContext
   deriving (Eq)
 
 prettyType :: TypeContext -> Type -> String
-prettyType context = \case
+prettyType context tipe =
+  case unforall tipe of
+    ([], t) -> prettyMono context t
+    (vars, t) -> parens (context /= TypeOuter) $ concat
+      [ "any ", unwords vars, ". ", prettyType TypeOuter t ]
+
+prettyMono :: TypeContext -> Type -> String
+prettyMono context = \case
   TCon (Unqualified n) -> parens (operator n) n
   TCon (Qualified m n) -> m ++ "." ++ parens (operator n) n
   TVar (n, _) -> n
@@ -294,6 +305,8 @@ prettyType context = \case
       , " "
       , prettyType CallRight t2
       ]
+
+  t -> prettyType context t
 
 data KindContext
   = KindOuter

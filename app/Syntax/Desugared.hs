@@ -23,9 +23,9 @@ data SimpleExpr
   | Label Label
   | Identifier Identifier
   | DefIn Name (Maybe Type) Expr Expr
-  | Lambda Name Expr
+  | Lambda Name (Maybe Type) Expr
   | Call Expr Expr
-  | Annotate Expr Type
+  | Annotate Type
   deriving (Show)
 
 type Expr = (SimpleExpr, Location)

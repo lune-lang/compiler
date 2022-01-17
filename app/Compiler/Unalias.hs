@@ -45,15 +45,17 @@ applyExpr subst expr@(_, loc) =
       x2' = applyExpr subst' x2
       in (DefIn name tipe x1' x2', loc)
 
-    Lambda arg x -> let
+    Lambda arg tipe x -> let
       subst' = Map.delete arg subst
       x' = applyExpr subst' x
-      in (Lambda arg x', loc)
+      in (Lambda arg tipe x', loc)
 
     Call x1 x2 -> let
       x1' = applyExpr subst x1
       x2' = applyExpr subst x2
       in (Call x1' x2', loc)
+
+    Annotate _ -> expr
 
 applyType :: Map Name Type -> Type -> Type
 applyType subst tipe@(_, loc) =
@@ -106,14 +108,19 @@ continueExpr expr@(_, loc) =
       x2' <- unaliasExpr x2
       return (DefIn name tipe' x1' x2', loc)
 
-    Lambda arg x -> do
+    Lambda arg tipe x -> do
+      tipe' <- mapM unaliasType tipe
       x' <- unaliasExpr x
-      return (Lambda arg x', loc)
+      return (Lambda arg tipe' x', loc)
 
     Call x1 x2 -> do
       x1' <- unaliasExpr x1
       x2' <- unaliasExpr x2
       return (Call x1' x2', loc)
+
+    Annotate tipe -> do
+      tipe' <- unaliasType tipe
+      return (Annotate tipe', loc)
 
     _ -> return expr
 

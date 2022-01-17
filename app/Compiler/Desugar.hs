@@ -355,7 +355,7 @@ desugarExpr (expr, loc) =
     F.Operator name Nothing (Just x) -> do
       x' <- desugarExpr x
       ifDefined (Unqualified name)
-        \sub -> Lambda safeVar
+        \sub -> Lambda safeVar Nothing
           (Call (Call (sub, loc) (varRef, loc), loc) x', loc)
 
     F.Operator name (Just x) (Just y) -> do
@@ -376,12 +376,12 @@ desugarExpr (expr, loc) =
       local <- Monad.foldM insertLocalValue emptyVars (zipRepeat args loc)
       Reader.local (Bf.second (local <>)) do
         body' <- desugarExpr body
-        let lambda n x = withLoc (Lambda n x)
+        let lambda n x = withLoc (Lambda n Nothing x)
         Fold.foldrM lambda body' args
 
     F.Delay body -> do
       body' <- desugarExpr body
-      withLoc (Lambda safeVar body')
+      withLoc (Lambda safeVar Nothing body')
 
     F.Call func arg -> do
       func' <- desugarExpr func

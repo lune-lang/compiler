@@ -1,6 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module Compiler.Infer (checkModule) where
@@ -24,7 +25,7 @@ import Control.Monad.Reader (ReaderT)
 import Control.Monad.State (State)
 
 import qualified Control.Lens as Lens
-import Control.Lens ((^.), (.~), (%~))
+import Control.Lens ((^.), (%~))
 
 import qualified Compiler.Error as Error
 import qualified Syntax.Desugared as D
@@ -64,17 +65,32 @@ nullSubst = Map.empty
 compose :: Subst -> Subst -> Subst
 compose s2 s1 = s2 <> apply s2 s1
 
+splitSubst :: Subst -> (Subst, Subst)
+splitSubst = Map.partition \case
+  TAny _ _ -> True
+  _ -> False
+
 class Substitutable a where
   apply :: Subst -> a -> a
+  substVars :: Map Name Name -> a -> a
   freeVars :: a -> Set Name
 
 instance Substitutable Type where
   apply s = \case
     TCon n -> TCon n
     TLabel n -> TLabel n
-    t@(TVar (n, _)) -> Maybe.fromMaybe t (Map.lookup n s)
+    t@(TVar (n, _)) -> Map.lookup n s
+      & Maybe.fromMaybe t
     TCall t1 t2 -> TCall (apply s t1) (apply s t2)
     TAny n t -> TAny n $ apply (Map.delete n s) t
+
+  substVars s = \case
+    TCon n -> TCon n
+    TLabel n -> TLabel n
+    t@(TVar (n, origin)) -> Map.lookup n s
+      & maybe t \n' -> TVar (n', origin)
+    TCall t1 t2 -> TCall (substVars s t1) (substVars s t2)
+    TAny n t -> TAny n $ substVars (Map.delete n s) t
 
   freeVars = \case
     TCon _ -> Set.empty
@@ -85,16 +101,13 @@ instance Substitutable Type where
 
 instance Substitutable a => Substitutable (Map k a) where
   apply s = fmap (apply s)
+  substVars s = fmap (substVars s)
   freeVars = foldMap freeVars
-
-type Constraint = (Location, Type, Type)
 
 data Stream a = Cons a (Stream a)
 
-data InferState = InferState
-  { _constraints :: [Constraint]
-  , _freshNames :: Stream Name
-  }
+newtype InferState = InferState
+  { _freshNames :: Stream Name }
 
 Lens.makeLenses ''InferState
 
@@ -107,12 +120,17 @@ extendEnv n t = Reader.local (typeEnv %~ Map.insert n t)
 applyEnv :: Subst -> Infer a -> Infer a
 applyEnv s = Reader.local (typeEnv %~ apply s)
 
-specialType :: Role -> Location -> InferWith String Type -> Infer Type
-specialType role loc err = do
+typeRole :: Role -> Infer (Maybe Type)
+typeRole role = do
   special <- Reader.asks (^. syntax)
   case Map.lookup role special of
-    Just (Left t) -> return t
-    _ -> Error.withLocation loc err
+    Just (Left x) -> return (Just x)
+    _ -> return Nothing
+
+specialType :: Role -> Location -> InferWith String Type -> Infer Type
+specialType role loc err =
+  typeRole role >>=
+  maybe (Error.withLocation loc err) return
 
 functionType :: Location -> Type -> Type -> Infer Type
 functionType loc t1 t2 = do
@@ -138,21 +156,26 @@ labelType loc n = do
   t <- specialType LabelType loc Error.labelType
   return $ TCall t (TLabel n)
 
-rowCons :: Infer (Maybe Type)
-rowCons = do
-  special <- Reader.asks (^. syntax)
-  case Map.lookup RowConstructor special of
-    Just (Left t) -> return (Just t)
-    _ -> return Nothing
-
-freshVar :: Origin -> Infer Type
-freshVar origin = do
+freshName :: Infer Name
+freshName = do
   var <- State.gets (first . Lens.view freshNames)
   State.modify (freshNames %~ rest)
-  return $ TVar (var, origin)
+  return var
   where
     first (Cons n _) = n
     rest (Cons _ ns) = ns
+
+freshVar :: Origin -> Infer Type
+freshVar origin = do
+  var <- freshName
+  return $ TVar (var, origin)
+
+substFresh :: Type -> Infer Type
+substFresh t = do
+  let vs = Set.toList (freeVars t)
+  vs' <- mapM (const freshName) vs
+  let s = Map.fromList (zip vs vs')
+  return (substVars s t)
 
 generalise :: Type -> Infer Type
 generalise t = do
@@ -175,118 +198,112 @@ inferType (expr, loc) =
         Nothing -> Error.withLocation loc (Error.notDefined n)
         Just t -> return (nullSubst, t)
 
-    --DefIn
+    DefIn n _ x1@(_, loc1) x2 -> do
+      cons <- typeRole RowConstructor
+      let ?cons = cons
+      var <- freshVar Inferred
+      (s1, t1) <- extendEnv (Unqualified n) var (inferType x1)
+      s2 <- unify loc1 (apply s1 var) t1
+      (s3, t2) <- applyEnv s2 $ extendEnv (Unqualified n) t1 (inferType x2)
+      return (s3 `compose` s2, t2)
 
-    Lambda n x -> do
+    Lambda n Nothing x -> do
       var <- freshVar Inferred
       (s, t) <- extendEnv (Unqualified n) var (inferType x)
       tf <- apply s <$> functionType loc var (escape t)
       applyEnv s $ (s, ) <$> generalise tf
 
-    {-
-    Lambda n x -> do
-      var <- freshVar Inferred
-      t <- extendEnv (Unqualified n) (Forall [] var) (inferType x)
-      functionType loc var t
-    -}
+    Lambda n (Just anno) x -> do
+      anno' <- substFresh (convertType anno)
+      (s, t) <- extendEnv (Unqualified n) anno' (inferType x)
+      tf <- apply s <$> functionType loc anno' (escape t)
+      applyEnv s $ (s, ) <$> generalise tf
 
-    _ -> undefined
+    Call x1@(_, loc1) x2@(_, loc2) -> do
+      arr <- typeRole FunctionType
+      (_, t1) <- inferType x1
+      (s1, t1a, t1b) <- unifyArr arr loc1 (escape t1)
+      (s2, t2) <- applyEnv s1 (inferType x2)
+      (s3a, s3b) <- splitSubst <$> subsume loc2 (apply s2 t1a) t2
+      let s4 = s3b `compose` s2 `compose` s1
+      applyEnv s4 do
+        env <- Reader.asks (^. typeEnv)
+        if Set.disjoint (Map.keysSet s3a) (freeVars env)
+          then (s4, ) <$> generalise (apply (s3a `compose` s4) t1b)
+          else Error.withLocation loc Error.unsure
+
+    Annotate t -> do
+      t' <- substFresh (convertType t)
+      basic (functionType loc t' t')
+
     where
       basic f = (nullSubst, ) <$> f
 
+unifyArr :: Maybe Type -> Location -> Type -> Infer (Subst, Type, Type)
+unifyArr maybeArr loc = \case
+  TCall2 a t1 t2 | Just arr <- maybeArr, arr == a ->
+    return (nullSubst, t1, t2)
 
-{-
-instantiate :: (Name -> Origin) -> Type -> Infer Type
-instantiate origin (TAny vs t) = do
-  vs' <- mapM (freshVar . origin) vs
-  let s = Map.fromList $ zip vs vs'
-  return (apply s t)
+  TVar (n, origin) -> do
+    var1 <- freshVar origin
+    var2 <- freshVar origin
+    tf <- functionType loc var1 var2
+    return (Map.singleton n tf, var1, var2)
 
-generalise :: Type -> Infer Type
-generalise t = do
-  env <- Reader.asks (^. typeEnv)
-  let vs = freeVars t \\ freeVars env
-  return $ Forall (Set.toList vs) t
+  t -> do
+    var1 <- freshVar Inferred
+    var2 <- freshVar Inferred
+    tf <- functionType loc var1 var2
+    Error.withLocation loc (Error.unification t tf)
 
-unify :: Location -> Type -> Type -> Infer ()
-unify loc t1 t2 = State.modify $ constraints %~ ((loc, t1, t2):)
+subsume :: Location -> Type -> Type -> Infer Subst
+subsume loc t1 t2 = do
+  cons <- typeRole RowConstructor
+  let ?cons = cons
+  let (vars1, t1') = unforall t1
+  let (vars2, t2') = unforall t2
+  sks <- mapM (const freshName) vars1
+  let t3 = substVars (Map.fromList $ zip vars1 sks) t1'
+  s <- unify loc t3 t2'
+  let s' = foldr Map.delete s vars2
+  if Set.disjoint (Set.fromList sks) (freeVars s')
+    then return s'
+    else Error.withLocation loc (Error.unification t1 t2)
 
-inferType :: Expr -> Infer Type
-inferType (expr, loc) =
-  case expr of
-    Int _ -> freshVar Inferred >>= numberType loc
-    Float _ -> floatType loc
-    Char _ -> charType loc
-    String _ -> stringType loc
-    Label n -> labelType loc n
-
-    Identifier n -> do
-      env <- Reader.asks (^. typeEnv)
-      maybe (Error.withLocation loc $ Error.notDefined n)
-        (instantiate $ const Inferred) (Map.lookup n env)
-
-    DefIn n maybeAnno x1@(_, loc1) x2 ->
-      let
-        getSubst t =
-          case maybeAnno of
-            Nothing -> solve
-            Just anno@(D.TAny _ (_, annoLoc)) -> do
-              anno' <- instantiate Annotated (convertScheme anno)
-              unify loc1 t anno'
-              s <- solve
-              equivalent annoLoc anno' (apply s anno')
-              return s
-
-        getType = do
-          var <- freshVar Inferred
-          t <- extendEnv (Unqualified n) (Forall [] var) (inferType x1)
-          unify loc1 t var
-          s <- getSubst t
-          return (s, t)
-      in do
-      (s, t) <- getType
-      Reader.local (typeEnv %~ apply s) do
-        sc <- generalise (apply s t)
-        extendEnv (Unqualified n) sc (inferType x2)
-
-    Lambda n x -> do
-      var <- freshVar Inferred
-      t <- extendEnv (Unqualified n) (Forall [] var) (inferType x)
-      functionType loc var t
-
-    Call x1@(_, loc1) x2@(_, loc2) -> do
-      t1 <- inferType x1
-      t2 <- inferType x2
-      var <- freshVar Inferred
-      tf <- functionType loc1 t2 var
-      unify loc2 tf t1
-      return var
-
-unifies :: Maybe Type -> Location -> Type -> Type -> Infer Subst
-unifies cons loc = curry \case
+unify :: (?cons :: Maybe Type) => Location -> Type -> Type -> Infer Subst
+unify loc = curry \case
   (t1, t2) | t1 == t2 -> return nullSubst
 
   (TVar n, t) -> bind loc n t
   (t, TVar n) -> bind loc n t
 
-  (TCall3 n l v1 r1, t2) | Just cons' <- cons, n == cons' -> do
-      (v2, r2) <- rowGet cons' loc l t2
-      s1 <- unifies cons loc v1 v2
-      s2 <- unifies cons loc (apply s1 r1) (apply s1 r2)
-      return (compose s2 s1)
+  (TCall3 c l v1 r1, t2) | Just cons <- ?cons, c == cons -> do
+    (v2, r2) <- rowGet cons loc l t2
+    s1 <- unify loc v1 v2
+    s2 <- unify loc (apply s1 r1) (apply s1 r2)
+    return (compose s2 s1)
 
   (TCall t1 t2, TCall t3 t4) -> do
-    s1 <- unifies cons loc t1 t3
-    s2 <- unifies cons loc (apply s1 t2) (apply s1 t4)
+    s1 <- unify loc t1 t3
+    s2 <- unify loc (apply s1 t2) (apply s1 t4)
     return (compose s2 s1)
+
+  (TAny n1 t1, TAny n2 t2) -> do
+    sk <- freshName
+    let t1' = substVars (Map.singleton n1 sk) t1
+    let t2' = substVars (Map.singleton n2 sk) t2
+    s <- unify loc t1' t2'
+    if Set.member sk (freeVars s)
+      then Error.withLocation loc Error.unsure
+      else return s
 
   (t1, t2) -> Error.withLocation loc (Error.unification t1 t2)
 
 rowGet :: Type -> Location -> Type -> Type -> Infer (Type, Type)
 rowGet cons loc label = \case
-  (TCall3 n l v r) | n == cons ->
+  (TCall3 c l v r) | c == cons ->
     if l == label then return (v, r)
-    else Bf.second (TCall3 n l v) <$> rowGet cons loc label r
+    else Bf.second (TCall3 c l v) <$> rowGet cons loc label r
 
   TVar (_, origin) -> (,) <$> freshVar origin <*> freshVar origin
 
@@ -304,18 +321,6 @@ bind loc (n, origin) t =
     variable = case t of
       TVar _ -> True
       _ -> False
-
-solver :: Subst -> [Constraint] -> Infer Subst
-solver s = \case
-  [] -> return s
-  (loc, t1, t2) : cs -> do
-    cons <- rowCons
-    s1 <- unifies cons loc t1 t2
-    let sub = Bf.bimap (apply s1) (apply s1)
-    solver (compose s1 s) (map sub cs)
-
-solve :: Infer Subst
-solve = State.gets (^. constraints) >>= solver nullSubst
 
 kindMapUnion :: Location -> Map Name Kind -> Map Name Kind -> Infer (Map Name Kind)
 kindMapUnion loc s1 s2 = do
@@ -349,6 +354,10 @@ inferKind (tipe, loc) =
           return (k3, s3)
         _ -> Error.withLocation loc1 $ Error.typeCall (convertType t1)
 
+    D.TAny n t -> do
+      (k, s) <- inferKind t
+      return (k, Map.delete n s)
+
 checkKind :: Kind -> D.Type -> Infer (Map Name Kind)
 checkKind k = \case
   (D.TVar n, _) -> return (Map.singleton n k)
@@ -362,45 +371,13 @@ checkKind k = \case
 checkFuncs :: [(Identifier, Maybe D.Type, Expr, Location)] -> Infer ()
 checkFuncs = \case
   [] -> return ()
-  (n, maybeAnno, x@(_, loc), _) : fs ->
-    let
-      getSubst t =
-        case maybeAnno of
-          Nothing -> solve
-          Just anno@(D.TAny _ (_, annoLoc)) -> do
-            anno' <- instantiate Annotated (convertScheme anno)
-            unify loc t anno'
-            s <- solve
-            equivalent annoLoc anno' (apply s anno')
-            return s
-
-      getType = do
-        var <- freshVar Inferred
-        t <- extendEnv n (Forall [] var) (inferType x)
-        unify loc t var
-        s <- getSubst t
-        return (s, t)
-    in do
-    (s, t) <- Error.defContext n getType
-    Reader.local (typeEnv %~ apply s) $ do
-      sc <- generalise (apply s t)
-      State.modify (constraints .~ [])
-      extendEnv n sc (checkFuncs fs)
-
-equivalent :: Location -> Type -> Type -> Infer ()
-equivalent loc tipe1 tipe2 =
-  Monad.when bad $ Error.withLocation loc (Error.unification tipe1 tipe2)
-  where
-    pairings = curry \case
-      (TCall t1 t2, TCall t3 t4) -> pairings t1 t3 <> pairings t2 t4
-      (TVar (v1, _), TVar (v2, _)) -> Set.singleton (v1, v2)
-      _ -> Set.empty
-
-    pairs = pairings tipe1 tipe2
-
-    bad =
-      Set.size (Set.map fst pairs) < Set.size pairs ||
-      Set.size (Set.map snd pairs) < Set.size pairs
+  (n, _, x@(_, loc), _) : fs -> do
+    cons <- typeRole RowConstructor
+    let ?cons = cons
+    var <- freshVar Inferred
+    (s, t) <- extendEnv n var (inferType x)
+    s2 <- unify loc (apply s var) t
+    applyEnv s2 $ extendEnv n t (checkFuncs fs)
 
 wrapperEnv :: Identifier -> (Kind, Maybe Wrapper) -> Infer Env
 wrapperEnv n (_, w) =
@@ -417,8 +394,8 @@ wrapperEnv n (_, w) =
         _ <- checkKind KType t
         let wrapped' = convertType wrapped
         let t' = convertType t
-        makerType <- Forall vs <$> functionType loc t' wrapped'
-        getterType <- Forall vs <$> functionType loc wrapped' t'
+        makerType <- forall vs <$> functionType loc t' wrapped'
+        getterType <- forall vs <$> functionType loc wrapped' t'
         let envMaker = Map.singleton maker makerType
         let envTypes = case getter of
               Nothing -> envMaker
@@ -429,9 +406,9 @@ checkModule :: Module -> Either Error.Msg ()
 checkModule (Module funcs _ foreigns types _ syntaxDefs) =
   State.evalState (Reader.runReaderT (Except.runExceptT check) env) state
   where
-    state = InferState [] (foldr Cons undefined fresh)
+    state = InferState (foldr Cons undefined fresh)
 
-    envTypes = fmap (convertScheme . fst) foreigns
+    envTypes = fmap (convertType . fst) foreigns
     envKinds = fmap fst types
     envSyntax = fmap (Bf.first convertType) syntaxDefs
     env = Env envTypes envKinds envSyntax
@@ -440,7 +417,7 @@ checkModule (Module funcs _ foreigns types _ syntaxDefs) =
     numbers = concatMap (replicate $ length prefixes) ([0..] :: [Int])
     fresh = zipWith (++) (cycle prefixes) (map show numbers)
 
-    checkForeign n (D.TAny _ t, _) =
+    checkForeign n (t, _) =
       Error.defContext n $ Monad.void (checkKind KType t)
 
     check = do
@@ -448,7 +425,3 @@ checkModule (Module funcs _ foreigns types _ syntaxDefs) =
       Reader.local (wrapperE <>) do
         sequence_ (Map.mapWithKey checkForeign foreigns)
         checkFuncs funcs
--}
-
-checkModule :: Module -> Either Error.Msg ()
-checkModule = undefined

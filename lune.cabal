@@ -19,6 +19,7 @@ executable lune
       Compiler.Desugar,
       Compiler.Arrange,
       Compiler.Unalias,
+      Compiler.Propagate,
       Compiler.Infer,
       Compiler.Generate,
       Compiler.Error,
