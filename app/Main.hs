@@ -20,6 +20,7 @@ import qualified Compiler.Error as Error
 import Compiler.Parse (parseFiles)
 import Compiler.Desugar (desugarModules)
 import Compiler.Unalias (unaliasModule)
+import Compiler.Propagate (propagateModule)
 import Compiler.Infer (checkModule)
 import Compiler.Generate (genModule)
 import Document.Generate (docModules)
@@ -57,7 +58,7 @@ compile checkOnly =
   tryIO (parseFiles lunePaths) \modules ->
   try (desugarModules checkOnly $ Map.fromList $ zip modNames modules) \defs ->
   try (unaliasModule defs) \defs' ->
-  try (checkModule defs') \() ->
+  try (checkModule (propagateModule defs')) \() ->
     if checkOnly
       then putStrLn "All is well"
       else do

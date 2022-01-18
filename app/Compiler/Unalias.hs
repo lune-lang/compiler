@@ -132,8 +132,12 @@ continueType tipe@(_, loc) =
       t2' <- unaliasType t2
       return (TCall t1' t2', loc)
 
-    _ -> return tipe
+    TAny n t -> do
+      t' <- unaliasType t
+      return (TAny n t', loc)
 
+    _ -> return tipe
+    
 unaliasExpr :: Expr -> Unalias Expr
 unaliasExpr expr = do
   let args = getExprArgs expr

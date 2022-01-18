@@ -33,11 +33,13 @@ import Syntax.Common
 import Syntax.Desugared (SimpleExpr(..), Expr, Wrapper(..), Module(..))
 import Syntax.Inferred
 
+import Debug.Trace
+
 convertType :: D.Type -> Type
 convertType (tipe, _) =
   case tipe of
     D.TCon n -> TCon n
-    D.TVar n -> TVar (n, Annotated n)
+    D.TVar n -> TVar n
     D.TLabel n -> TLabel n
     D.TCall t1 t2 -> TCall (convertType t1) (convertType t2)
     D.TAny n t -> TAny n (convertType t)
@@ -63,45 +65,30 @@ nullSubst :: Subst
 nullSubst = Map.empty
 
 compose :: Subst -> Subst -> Subst
-compose s2 s1 = s2 <> apply s2 s1
-
-splitSubst :: Subst -> (Subst, Subst)
-splitSubst = Map.partition \case
-  TAny _ _ -> True
-  _ -> False
+compose s2 s1 = apply s2 s1 <> s2
 
 class Substitutable a where
   apply :: Subst -> a -> a
-  substVars :: Map Name Name -> a -> a
   freeVars :: a -> Set Name
 
 instance Substitutable Type where
   apply s = \case
     TCon n -> TCon n
     TLabel n -> TLabel n
-    t@(TVar (n, _)) -> Map.lookup n s
-      & Maybe.fromMaybe t
+    TVar n -> Map.lookup n s
+      & Maybe.fromMaybe (TVar n)
     TCall t1 t2 -> TCall (apply s t1) (apply s t2)
     TAny n t -> TAny n $ apply (Map.delete n s) t
-
-  substVars s = \case
-    TCon n -> TCon n
-    TLabel n -> TLabel n
-    t@(TVar (n, origin)) -> Map.lookup n s
-      & maybe t \n' -> TVar (n', origin)
-    TCall t1 t2 -> TCall (substVars s t1) (substVars s t2)
-    TAny n t -> TAny n $ substVars (Map.delete n s) t
 
   freeVars = \case
     TCon _ -> Set.empty
     TLabel _ -> Set.empty
-    TVar (n, _) -> Set.singleton n
+    TVar n -> Set.singleton n
     TCall t1 t2 -> freeVars t1 <> freeVars t2
     TAny n t -> Set.delete n (freeVars t)
 
 instance Substitutable a => Substitutable (Map k a) where
   apply s = fmap (apply s)
-  substVars s = fmap (substVars s)
   freeVars = foldMap freeVars
 
 data Stream a = Cons a (Stream a)
@@ -165,17 +152,15 @@ freshName = do
     first (Cons n _) = n
     rest (Cons _ ns) = ns
 
-freshVar :: Origin -> Infer Type
-freshVar origin = do
-  var <- freshName
-  return $ TVar (var, origin)
+freshVar :: Infer Type
+freshVar = TVar <$> freshName
 
 substFresh :: Type -> Infer Type
 substFresh t = do
   let vs = Set.toList (freeVars t)
-  vs' <- mapM (const freshName) vs
+  vs' <- mapM (const freshVar) vs
   let s = Map.fromList (zip vs vs')
-  return (substVars s t)
+  return (apply s t)
 
 generalise :: Type -> Infer Type
 generalise t = do
@@ -186,7 +171,7 @@ generalise t = do
 inferType :: Expr -> Infer (Subst, Type)
 inferType (expr, loc) =
   case expr of
-    Int _ -> basic (numberType loc =<< freshVar Inferred)
+    Int _ -> basic (numberType loc =<< freshVar)
     Float _ -> basic (floatType loc)
     Char _ -> basic (charType loc)
     String _ -> basic (stringType loc)
@@ -199,38 +184,43 @@ inferType (expr, loc) =
         Just t -> return (nullSubst, t)
 
     DefIn n _ x1@(_, loc1) x2 -> do
+      (s1, t1) <- inferType x1
+      (s2, t2) <- applyEnv s1 $ extendEnv (Unqualified n) t1 (inferType x2)
+      return (s2 `compose` s1, t2)
+
+      {-
       cons <- typeRole RowConstructor
       let ?cons = cons
-      var <- freshVar Inferred
+      var <- freshVar
       (s1, t1) <- extendEnv (Unqualified n) var (inferType x1)
       s2 <- unify loc1 (apply s1 var) t1
       (s3, t2) <- applyEnv s2 $ extendEnv (Unqualified n) t1 (inferType x2)
       return (s3 `compose` s2, t2)
+      -}
 
     Lambda n Nothing x -> do
-      var <- freshVar Inferred
+      var <- freshVar
       (s, t) <- extendEnv (Unqualified n) var (inferType x)
-      tf <- apply s <$> functionType loc var (escape t)
+      case apply s var of
+        TAny _ _ -> Error.withLocation loc Error.unsure
+        _ -> return ()
+      tf <- apply s <$> (functionType loc var =<< substFresh (escape t))
       applyEnv s $ (s, ) <$> generalise tf
 
     Lambda n (Just anno) x -> do
       anno' <- substFresh (convertType anno)
       (s, t) <- extendEnv (Unqualified n) anno' (inferType x)
-      tf <- apply s <$> functionType loc anno' (escape t)
+      tf <- apply s <$> (functionType loc anno' =<< substFresh (escape t))
       applyEnv s $ (s, ) <$> generalise tf
 
     Call x1@(_, loc1) x2@(_, loc2) -> do
       arr <- typeRole FunctionType
-      (_, t1) <- inferType x1
-      (s1, t1a, t1b) <- unifyArr arr loc1 (escape t1)
-      (s2, t2) <- applyEnv s1 (inferType x2)
-      (s3a, s3b) <- splitSubst <$> subsume loc2 (apply s2 t1a) t2
-      let s4 = s3b `compose` s2 `compose` s1
-      applyEnv s4 do
-        env <- Reader.asks (^. typeEnv)
-        if Set.disjoint (Map.keysSet s3a) (freeVars env)
-          then (s4, ) <$> generalise (apply (s3a `compose` s4) t1b)
-          else Error.withLocation loc Error.unsure
+      (s0, t1) <- inferType x1
+      (s1, t1a, t1b) <- unifyArr arr loc1 =<< substFresh (escape t1)
+      (s2, t2) <- applyEnv (s1 `compose` s0) (inferType x2)
+      s3 <- subsume loc2 (apply s2 t1a) t2
+      let s4 = s3 `compose` s2 `compose` s1 `compose` s0
+      applyEnv s4 $ (s4, ) <$> generalise (apply s4 t1b)
 
     Annotate t -> do
       t' <- substFresh (convertType t)
@@ -244,15 +234,15 @@ unifyArr maybeArr loc = \case
   TCall2 a t1 t2 | Just arr <- maybeArr, arr == a ->
     return (nullSubst, t1, t2)
 
-  TVar (n, origin) -> do
-    var1 <- freshVar origin
-    var2 <- freshVar origin
+  TVar n -> do
+    var1 <- freshVar
+    var2 <- freshVar
     tf <- functionType loc var1 var2
     return (Map.singleton n tf, var1, var2)
 
   t -> do
-    var1 <- freshVar Inferred
-    var2 <- freshVar Inferred
+    var1 <- freshVar
+    var2 <- freshVar
     tf <- functionType loc var1 var2
     Error.withLocation loc (Error.unification t tf)
 
@@ -263,7 +253,7 @@ subsume loc t1 t2 = do
   let (vars1, t1') = unforall t1
   let (vars2, t2') = unforall t2
   sks <- mapM (const freshName) vars1
-  let t3 = substVars (Map.fromList $ zip vars1 sks) t1'
+  let t3 = apply (Map.fromList $ zip vars1 $ map TVar sks) t1'
   s <- unify loc t3 t2'
   let s' = foldr Map.delete s vars2
   if Set.disjoint (Set.fromList sks) (freeVars s')
@@ -290,8 +280,8 @@ unify loc = curry \case
 
   (TAny n1 t1, TAny n2 t2) -> do
     sk <- freshName
-    let t1' = substVars (Map.singleton n1 sk) t1
-    let t2' = substVars (Map.singleton n2 sk) t2
+    let t1' = apply (Map.singleton n1 $ TVar sk) t1
+    let t2' = apply (Map.singleton n2 $ TVar sk) t2
     s <- unify loc t1' t2'
     if Set.member sk (freeVars s)
       then Error.withLocation loc Error.unsure
@@ -305,22 +295,15 @@ rowGet cons loc label = \case
     if l == label then return (v, r)
     else Bf.second (TCall3 c l v) <$> rowGet cons loc label r
 
-  TVar (_, origin) -> (,) <$> freshVar origin <*> freshVar origin
+  TVar _ -> (,) <$> freshVar <*> freshVar
 
   t -> Error.withLocation loc (Error.noLabel label t)
 
-bind :: Location -> (Name, Origin) -> Type -> Infer Subst
-bind loc (n, origin) t =
-  case origin of
-    Annotated n' | not variable ->
-      Error.withLocation loc (Error.generalAnno n' t)
-    _ | Set.member n (freeVars t) ->
+bind :: Location -> Name -> Type -> Infer Subst
+bind loc n t
+  | Set.member n (freeVars t) =
       Error.withLocation loc (Error.occursCheck n t)
-    _ -> return (Map.singleton n t)
-  where
-    variable = case t of
-      TVar _ -> True
-      _ -> False
+  | otherwise = return (Map.singleton n t)
 
 kindMapUnion :: Location -> Map Name Kind -> Map Name Kind -> Infer (Map Name Kind)
 kindMapUnion loc s1 s2 = do
@@ -370,14 +353,22 @@ checkKind k = \case
 
 checkFuncs :: [(Identifier, Maybe D.Type, Expr, Location)] -> Infer ()
 checkFuncs = \case
-  [] -> return ()
+  [] -> do
+    env <- Reader.asks (^. typeEnv)
+    mapM_ traceShowM (Map.toList env)
+
   (n, _, x@(_, loc), _) : fs -> do
+    (s, t) <- inferType x
+    applyEnv s $ extendEnv n t (checkFuncs fs)
+
+    {-
     cons <- typeRole RowConstructor
     let ?cons = cons
-    var <- freshVar Inferred
+    var <- freshVar
     (s, t) <- extendEnv n var (inferType x)
     s2 <- unify loc (apply s var) t
     applyEnv s2 $ extendEnv n t (checkFuncs fs)
+    -}
 
 wrapperEnv :: Identifier -> (Kind, Maybe Wrapper) -> Infer Env
 wrapperEnv n (_, w) =

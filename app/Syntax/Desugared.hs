@@ -26,7 +26,6 @@ data SimpleExpr
   | Lambda Name (Maybe Type) Expr
   | Call Expr Expr
   | Annotate Type
-  deriving (Show)
 
 type Expr = (SimpleExpr, Location)
 
@@ -36,7 +35,7 @@ data SimpleType
   | TLabel Label
   | TCall Type Type
   | TAny Name Type
-  deriving (Eq, Show)
+  deriving (Eq)
 
 type Type = (SimpleType, Location)
 

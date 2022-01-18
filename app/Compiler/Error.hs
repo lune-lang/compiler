@@ -56,7 +56,8 @@ import qualified Syntax.Frontend as F
 import Syntax.Common
 import Syntax.Inferred
 
-{--
+{--}
+--orphan instances for debugging
 instance Show Identifier where
   show = \case
     Unqualified n -> parens (operator n) n
@@ -65,9 +66,8 @@ instance Show Identifier where
 instance Show Type where
   show = prettyType TypeOuter
 
-instance Show Scheme where
-  show (Forall vs t) = concat
-    [ "any ", unwords vs, ". ", show t ]
+instance Show Kind where
+  show = prettyKind KindOuter
 --}
 
 class NameError a where
@@ -289,7 +289,7 @@ prettyMono :: TypeContext -> Type -> String
 prettyMono context = \case
   TCon (Unqualified n) -> parens (operator n) n
   TCon (Qualified m n) -> m ++ "." ++ parens (operator n) n
-  TVar (n, _) -> n
+  TVar n -> n
   TLabel n -> n
 
   TCall (TCall (TCon (Qualified _ n)) t1) t2 | operator n ->

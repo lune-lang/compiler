@@ -2,8 +2,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 
 module Syntax.Inferred
-  ( Origin(..)
-  , Type(.., TCall2, TCall3)
+  ( Type(.., TCall2, TCall3)
   , forall, unforall, escape
   ) where
 
@@ -11,12 +10,9 @@ import qualified Data.Bifunctor as Bf
 
 import Syntax.Common
 
-data Origin = Annotated Name | Inferred
-  deriving (Eq)
-
 data Type
   = TCon Identifier
-  | TVar (Name, Origin)
+  | TVar Name
   | TLabel Label
   | TCall Type Type
   | TAny Name Type
