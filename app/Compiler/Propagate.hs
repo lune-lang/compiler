@@ -10,7 +10,7 @@ import qualified Data.Map as Map
 import Syntax.Common
 import Syntax.Desugared
 
-annotate :: (?arr :: Maybe Type) => Type -> Expr -> Expr
+annotate :: (?arr :: Maybe SimpleType) => Type -> Expr -> Expr
 annotate tipe (expr, loc) =
   (, loc) case expr of
     DefIn name anno x1 x2 ->
@@ -18,13 +18,13 @@ annotate tipe (expr, loc) =
 
     Lambda arg _ x
       | Just arr <- ?arr
-      , (TCall (TCall a t1, _) t2, _) <- tipe
+      , (TCall (TCall (a, _) t1, _) t2, _) <- tipe
       , arr == a
       -> Lambda arg (Just t1) (annotate t2 x)
 
-    _ -> Call (Annotate tipe, loc) (expr, loc)
+    _ -> Annotate (expr, loc) tipe
 
-propagateExpr :: (?arr :: Maybe Type) => Expr -> Expr
+propagateExpr :: (?arr :: Maybe SimpleType) => Expr -> Expr
 propagateExpr (expr, loc) =
   (, loc) case expr of
     DefIn name (Just tipe) x1 x2 ->
@@ -36,10 +36,11 @@ propagateExpr (expr, loc) =
 
     Lambda arg anno x -> Lambda arg anno (propagateExpr x)
     Call x1 x2 -> Call (propagateExpr x1) (propagateExpr x2)
+    Annotate x tipe -> Annotate (propagateExpr x) tipe
     _ -> expr
 
 propagateFunc
-  :: (?arr :: Maybe Type)
+  :: (?arr :: Maybe SimpleType)
   => (Identifier, Maybe Type, Expr, Location)
   -> (Identifier, Maybe Type, Expr, Location)
 propagateFunc (name, anno, x, loc) = let
@@ -55,6 +56,6 @@ joinLeft = \case
 
 propagateModule :: Module ->  Module
 propagateModule (Module funcs expands foreigns types synonyms syntax) =
-  let ?arr = joinLeft (Map.lookup FunctionType syntax) in
+  let ?arr = fst <$> joinLeft (Map.lookup FunctionType syntax) in
   let funcs' = map propagateFunc funcs in
   Module funcs' expands foreigns types synonyms syntax

@@ -55,7 +55,9 @@ applyExpr subst expr@(_, loc) =
       x2' = applyExpr subst x2
       in (Call x1' x2', loc)
 
-    Annotate _ -> expr
+    Annotate x tipe -> let
+      x' = applyExpr subst x
+      in (Annotate x' tipe, loc)
 
 applyType :: Map Name Type -> Type -> Type
 applyType subst tipe@(_, loc) =
@@ -118,9 +120,10 @@ continueExpr expr@(_, loc) =
       x2' <- unaliasExpr x2
       return (Call x1' x2', loc)
 
-    Annotate tipe -> do
+    Annotate x tipe -> do
+      x' <- unaliasExpr x
       tipe' <- unaliasType tipe
-      return (Annotate tipe', loc)
+      return (Annotate x' tipe', loc)
 
     _ -> return expr
 
@@ -137,7 +140,7 @@ continueType tipe@(_, loc) =
       return (TAny n t', loc)
 
     _ -> return tipe
-    
+
 unaliasExpr :: Expr -> Unalias Expr
 unaliasExpr expr = do
   let args = getExprArgs expr

@@ -94,9 +94,8 @@ genExpr (expr, _) =
     Identifier n -> genIdentifier n
     DefIn n _ x y -> genDefIn n x y
     Lambda n _ x -> genLambda n x
-    Call (Annotate _, _) x -> genExpr x
     Call f x -> genCall f x
-    Annotate _ -> ""
+    Annotate x _ -> genExpr x
 
 genIdentifier :: Identifier -> String
 genIdentifier = \case

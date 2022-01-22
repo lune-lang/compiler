@@ -64,8 +64,9 @@ type Subst = Map Name Type
 nullSubst :: Subst
 nullSubst = Map.empty
 
+infixr 9 `compose`
 compose :: Subst -> Subst -> Subst
-compose s2 s1 = apply s2 s1 <> s2
+compose s2 s1 = s2 <> apply s2 s1
 
 class Substitutable a where
   apply :: Subst -> a -> a
@@ -75,8 +76,7 @@ instance Substitutable Type where
   apply s = \case
     TCon n -> TCon n
     TLabel n -> TLabel n
-    TVar n -> Map.lookup n s
-      & Maybe.fromMaybe (TVar n)
+    TVar n -> Maybe.fromMaybe (TVar n) (Map.lookup n s)
     TCall t1 t2 -> TCall (apply s t1) (apply s t2)
     TAny n t -> TAny n $ apply (Map.delete n s) t
 
@@ -155,6 +155,17 @@ freshName = do
 freshVar :: Infer Type
 freshVar = TVar <$> freshName
 
+instantiate :: Type -> Infer Type
+instantiate t = snd <$> unforallFresh t
+
+unforallFresh :: Type -> Infer ([Name], Type)
+unforallFresh tipe =
+  case unforall tipe of
+    (vs, t) -> do
+      vs' <- mapM (const freshName) vs
+      let s = Map.fromList $ zip vs (map TVar vs')
+      return (vs', apply s t)
+
 substFresh :: Type -> Infer Type
 substFresh t = do
   let vs = Set.toList (freeVars t)
@@ -184,50 +195,64 @@ inferType (expr, loc) =
         Just t -> return (nullSubst, t)
 
     DefIn n _ x1@(_, loc1) x2 -> do
+      {-
       (s1, t1) <- inferType x1
       (s2, t2) <- applyEnv s1 $ extendEnv (Unqualified n) t1 (inferType x2)
       return (s2 `compose` s1, t2)
-
-      {-
+      -}
       cons <- typeRole RowConstructor
       let ?cons = cons
       var <- freshVar
       (s1, t1) <- extendEnv (Unqualified n) var (inferType x1)
       s2 <- unify loc1 (apply s1 var) t1
-      (s3, t2) <- applyEnv s2 $ extendEnv (Unqualified n) t1 (inferType x2)
+      (s3, t2) <- applyEnv s2 do
+        t1' <- generalise t1
+        extendEnv (Unqualified n) t1' (inferType x2)
       return (s3 `compose` s2, t2)
-      -}
 
     Lambda n Nothing x -> do
       var <- freshVar
       (s, t) <- extendEnv (Unqualified n) var (inferType x)
-      case apply s var of
-        TAny _ _ -> Error.withLocation loc Error.unsure
-        _ -> return ()
-      tf <- apply s <$> (functionType loc var =<< substFresh (escape t))
+      Monad.when (polymorphic $ apply s var)
+        (Error.withLocation loc Error.unsure)
+      t' <- if annotated x then return t else instantiate t
+      tf <- apply s <$> functionType loc var t'
       applyEnv s $ (s, ) <$> generalise tf
 
     Lambda n (Just anno) x -> do
       anno' <- substFresh (convertType anno)
       (s, t) <- extendEnv (Unqualified n) anno' (inferType x)
-      tf <- apply s <$> (functionType loc anno' =<< substFresh (escape t))
+      t' <- if annotated x then return t else instantiate t
+      tf <- apply s <$> functionType loc anno' t'
       applyEnv s $ (s, ) <$> generalise tf
 
-    Call x1@(_, loc1) x2@(_, loc2) -> do
-      arr <- typeRole FunctionType
-      (s0, t1) <- inferType x1
-      (s1, t1a, t1b) <- unifyArr arr loc1 =<< substFresh (escape t1)
-      (s2, t2) <- applyEnv (s1 `compose` s0) (inferType x2)
-      s3 <- subsume loc2 (apply s2 t1a) t2
-      let s4 = s3 `compose` s2 `compose` s1 `compose` s0
-      applyEnv s4 $ (s4, ) <$> generalise (apply s4 t1b)
+    Call x1 x2 -> inferCall False x1 x2
 
-    Annotate t -> do
-      t' <- substFresh (convertType t)
-      basic (functionType loc t' t')
+    Annotate x t -> let
+      fun = (Lambda "_" (Just t) (Identifier (Unqualified "_"), loc), loc)
+      in inferCall True fun x
 
     where
       basic f = (nullSubst, ) <$> f
+
+inferCall :: Bool -> Expr -> Expr -> Infer (Subst, Type)
+inferCall rigid x1@(_, loc1) x2@(_, loc2) = do
+  arr <- typeRole FunctionType
+  cons <- typeRole RowConstructor
+  let ?cons = cons
+  (s0, t1) <- inferType x1
+  (s1, t1a, t1b) <- unifyArr arr loc1 =<< instantiate t1
+  (s2, t2) <- applyEnv (s1 `compose` s0) (inferType x2)
+  let uni = if rigid then unify else subsume
+  s3 <- uni loc2 (apply s2 t1a) t2
+  let s4 = s3 `compose` s2 `compose` s1 `compose` s0
+  applyEnv s4 $ (s4, ) <$> generalise (apply s4 t1b)
+
+annotated :: Expr -> Bool
+annotated (expr, _) =
+  case expr of
+    Annotate _ _ -> True
+    _ -> False
 
 unifyArr :: Maybe Type -> Location -> Type -> Infer (Subst, Type, Type)
 unifyArr maybeArr loc = \case
@@ -246,17 +271,13 @@ unifyArr maybeArr loc = \case
     tf <- functionType loc var1 var2
     Error.withLocation loc (Error.unification t tf)
 
-subsume :: Location -> Type -> Type -> Infer Subst
+subsume :: (?cons :: Maybe Type) => Location -> Type -> Type -> Infer Subst
 subsume loc t1 t2 = do
-  cons <- typeRole RowConstructor
-  let ?cons = cons
-  let (vars1, t1') = unforall t1
-  let (vars2, t2') = unforall t2
-  sks <- mapM (const freshName) vars1
-  let t3 = apply (Map.fromList $ zip vars1 $ map TVar sks) t1'
-  s <- unify loc t3 t2'
+  (vars1, t1') <- unforallFresh t1
+  (vars2, t2') <- unforallFresh t2
+  s <- unify loc t1' t2'
   let s' = foldr Map.delete s vars2
-  if Set.disjoint (Set.fromList sks) (freeVars s')
+  if Set.disjoint (Set.fromList vars1) (freeVars s')
     then return s'
     else Error.withLocation loc (Error.unification t1 t2)
 
@@ -268,15 +289,16 @@ unify loc = curry \case
   (t, TVar n) -> bind loc n t
 
   (TCall3 c l v1 r1, t2) | Just cons <- ?cons, c == cons -> do
-    (v2, r2) <- rowGet cons loc l t2
-    s1 <- unify loc v1 v2
-    s2 <- unify loc (apply s1 r1) (apply s1 r2)
-    return (compose s2 s1)
+    (s0, v2, r2) <- rowGet cons loc l t2
+    s1 <- unify loc (apply s0 v1) (apply s0 v2)
+    let s2 = s1 `compose` s0
+    s3 <- unify loc (apply s2 r1) (apply s2 r2)
+    return (s3 `compose` s2)
 
   (TCall t1 t2, TCall t3 t4) -> do
     s1 <- unify loc t1 t3
     s2 <- unify loc (apply s1 t2) (apply s1 t4)
-    return (compose s2 s1)
+    return (s2 `compose` s1)
 
   (TAny n1 t1, TAny n2 t2) -> do
     sk <- freshName
@@ -284,18 +306,24 @@ unify loc = curry \case
     let t2' = apply (Map.singleton n2 $ TVar sk) t2
     s <- unify loc t1' t2'
     if Set.member sk (freeVars s)
-      then Error.withLocation loc Error.unsure
+      then Error.withLocation loc (Error.unification (TAny n1 t1) (TAny n2 t2))
       else return s
 
   (t1, t2) -> Error.withLocation loc (Error.unification t1 t2)
 
-rowGet :: Type -> Location -> Type -> Type -> Infer (Type, Type)
+rowGet :: Type -> Location -> Type -> Type -> Infer (Subst, Type, Type)
 rowGet cons loc label = \case
   (TCall3 c l v r) | c == cons ->
-    if l == label then return (v, r)
-    else Bf.second (TCall3 c l v) <$> rowGet cons loc label r
+    if l == label then return (nullSubst, v, r)
+    else do
+      (s, v', r') <- rowGet cons loc label r
+      return (s, v', TCall3 c l v r')
 
-  TVar _ -> (,) <$> freshVar <*> freshVar
+  TVar n -> do
+    var1 <- freshVar
+    var2 <- freshVar
+    let t = TCall3 cons label var1 var2
+    return (Map.singleton n t, var1, var2)
 
   t -> Error.withLocation loc (Error.noLabel label t)
 
@@ -353,22 +381,22 @@ checkKind k = \case
 
 checkFuncs :: [(Identifier, Maybe D.Type, Expr, Location)] -> Infer ()
 checkFuncs = \case
-  [] -> do
-    env <- Reader.asks (^. typeEnv)
-    mapM_ traceShowM (Map.toList env)
+  [] -> return ()
 
   (n, _, x@(_, loc), _) : fs -> do
+    {-
     (s, t) <- inferType x
     applyEnv s $ extendEnv n t (checkFuncs fs)
-
-    {-
+    -}
     cons <- typeRole RowConstructor
     let ?cons = cons
     var <- freshVar
     (s, t) <- extendEnv n var (inferType x)
     s2 <- unify loc (apply s var) t
-    applyEnv s2 $ extendEnv n t (checkFuncs fs)
-    -}
+    applyEnv s2 do
+      t' <- generalise t
+      traceM (show n ++ " :: " ++ show t')
+      extendEnv n t' (checkFuncs fs)
 
 wrapperEnv :: Identifier -> (Kind, Maybe Wrapper) -> Infer Env
 wrapperEnv n (_, w) =

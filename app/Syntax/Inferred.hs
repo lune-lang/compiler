@@ -3,7 +3,7 @@
 
 module Syntax.Inferred
   ( Type(.., TCall2, TCall3)
-  , forall, unforall, escape
+  , forall, unforall, polymorphic
   ) where
 
 import qualified Data.Bifunctor as Bf
@@ -32,5 +32,10 @@ unforall = \case
   TAny n t -> Bf.first (n:) (unforall t)
   t -> ([], t)
 
-escape :: Type -> Type
-escape = snd . unforall
+polymorphic :: Type -> Bool
+polymorphic = \case
+  TCon _ -> False
+  TVar _ -> False
+  TLabel _ -> False
+  TCall t1 t2 -> polymorphic t1 || polymorphic t2
+  TAny _ _ -> True
