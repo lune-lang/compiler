@@ -5,10 +5,65 @@
 
 module Compiler.Propagate (propagateModule) where
 
+import qualified Data.List as List
+import qualified Data.Maybe as Maybe
+import qualified Data.Bifunctor as Bf
+
 import qualified Data.Map as Map
+import Data.Map (Map)
+
+import Control.Lens (_1, _2, _3, (%~))
 
 import Syntax.Common
 import Syntax.Desugared
+
+forall :: [(Name, Location)] -> Type -> Type
+forall vars t =
+  case vars of
+    [] -> t
+    (var, loc) : rest -> (TAny var $ forall rest t, loc)
+
+unforall :: Type -> ([(Name, Location)], Type)
+unforall (tipe, loc) =
+  case tipe of
+    TAny var t -> Bf.first ((var, loc):) (unforall t)
+    _ -> ([], (tipe, loc))
+
+freeVars :: Type -> [Name]
+freeVars (tipe, _) =
+  case tipe of
+    TCon _ -> []
+    TVar var -> [var]
+    TLabel _ -> []
+    TCall t1 t2 -> freeVars t1 ++ freeVars t2
+    TAny var t -> List.delete var (freeVars t)
+
+varPositions :: Type -> Map Name Int
+varPositions t = Map.fromList $ zip (freeVars t) [0..]
+
+filterSort :: (Ord b) => (a -> Maybe b) -> [a] -> [a]
+filterSort f = let
+  pair x = (x, ) <$> f x
+  in map fst . List.sortOn snd . Maybe.mapMaybe pair
+
+normalise :: Type -> Type
+normalise tipe =
+  case unforall tipe of
+    (vars, t) -> let
+      position var = Map.lookup (fst var) (varPositions t)
+      in forall (filterSort position vars) t
+
+normaliseFunc
+  :: (Identifier, Maybe Type, Expr, Location)
+  -> (Identifier, Maybe Type, Expr, Location)
+normaliseFunc = _2 %~ fmap normalise
+
+normaliseWrapper :: Wrapper -> Wrapper
+normaliseWrapper (Wrapper name t maker getter) =
+  Wrapper name (normalise t) maker getter
+
+normaliseTypeDef :: (Kind, Maybe Wrapper) -> (Kind, Maybe Wrapper)
+normaliseTypeDef = _2 %~ fmap normaliseWrapper
 
 annotate :: (?arr :: Maybe SimpleType) => Type -> Expr -> Expr
 annotate tipe (expr, loc) =
@@ -56,6 +111,9 @@ joinLeft = \case
 
 propagateModule :: Module ->  Module
 propagateModule (Module funcs expands foreigns types synonyms syntax) =
-  let ?arr = fst <$> joinLeft (Map.lookup FunctionType syntax) in
-  let funcs' = map propagateFunc funcs in
-  Module funcs' expands foreigns types synonyms syntax
+  let ?arr = fst <$> joinLeft (Map.lookup FunctionType syntax) in let
+  funcs' = map (propagateFunc . normaliseFunc) funcs
+  foreigns' = fmap (_1 %~ normalise) foreigns
+  types' = fmap normaliseTypeDef types
+  synonyms' = map (_3 %~ normalise) synonyms
+  in Module funcs' expands foreigns' types' synonyms' syntax

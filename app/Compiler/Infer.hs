@@ -6,16 +6,16 @@
 
 module Compiler.Infer (checkModule) where
 
+import qualified Data.List as List
 import qualified Data.Maybe as Maybe
 import qualified Data.Bifunctor as Bf
 import qualified Data.Foldable as Fold
 import qualified Control.Monad as Monad
+import Data.List ((\\))
 import Data.Function ((&))
 
 import qualified Data.Map as Map
-import qualified Data.Set as Set
 import Data.Map (Map)
-import Data.Set (Set, (\\))
 
 import qualified Control.Monad.Except as Except
 import qualified Control.Monad.Reader as Reader
@@ -70,7 +70,8 @@ compose s2 s1 = s2 <> apply s2 s1
 
 class Substitutable a where
   apply :: Subst -> a -> a
-  freeVars :: a -> Set Name
+  freeVars :: a -> [Name]
+  hasFree :: Name -> a -> Bool
 
 instance Substitutable Type where
   apply s = \case
@@ -81,24 +82,27 @@ instance Substitutable Type where
     TAny n t -> TAny n $ apply (Map.delete n s) t
 
   freeVars = \case
-    TCon _ -> Set.empty
-    TLabel _ -> Set.empty
-    TVar n -> Set.singleton n
-    TCall t1 t2 -> freeVars t1 <> freeVars t2
-    TAny n t -> Set.delete n (freeVars t)
+    TCon _ -> []
+    TLabel _ -> []
+    TVar n -> [n]
+    TCall t1 t2 -> freeVars t1 ++ freeVars t2
+    TAny n t -> List.delete n (freeVars t)
+
+  hasFree var = \case
+    TCon _ -> False
+    TLabel _ -> False
+    TVar n -> n == var
+    TCall t1 t2 -> hasFree var t1 || hasFree var t2
+    TAny n t -> n /= var && hasFree var t
 
 instance Substitutable a => Substitutable (Map k a) where
   apply s = fmap (apply s)
-  freeVars = foldMap freeVars
+  freeVars = concatMap freeVars
+  hasFree n = any (hasFree n)
 
-data Stream a = Cons a (Stream a)
+data Fresh = Cons Name Fresh
 
-newtype InferState = InferState
-  { _freshNames :: Stream Name }
-
-Lens.makeLenses ''InferState
-
-type InferWith e = ExceptT e (ReaderT Env (State InferState))
+type InferWith e = ExceptT e (ReaderT Env (State Fresh))
 type Infer = InferWith Error.Msg
 
 extendEnv :: Identifier -> Type -> Infer a -> Infer a
@@ -145,8 +149,8 @@ labelType loc n = do
 
 freshName :: Infer Name
 freshName = do
-  var <- State.gets (first . Lens.view freshNames)
-  State.modify (freshNames %~ rest)
+  var <- State.gets first
+  State.modify rest
   return var
   where
     first (Cons n _) = n
@@ -168,7 +172,7 @@ unforallFresh tipe =
 
 substFresh :: Type -> Infer Type
 substFresh t = do
-  let vs = Set.toList (freeVars t)
+  let vs = freeVars t
   vs' <- mapM (const freshVar) vs
   let s = Map.fromList (zip vs vs')
   return (apply s t)
@@ -215,22 +219,21 @@ inferType (expr, loc) =
       (s, t) <- extendEnv (Unqualified n) var (inferType x)
       Monad.when (polymorphic $ apply s var)
         (Error.withLocation loc Error.unsure)
-      t' <- if annotated x then return t else instantiate t
+      t' <- instantiate t
       tf <- apply s <$> functionType loc var t'
       applyEnv s $ (s, ) <$> generalise tf
 
     Lambda n (Just anno) x -> do
       anno' <- substFresh (convertType anno)
       (s, t) <- extendEnv (Unqualified n) anno' (inferType x)
-      t' <- if annotated x then return t else instantiate t
-      tf <- apply s <$> functionType loc anno' t'
+      tf <- apply s <$> functionType loc anno' t
       applyEnv s $ (s, ) <$> generalise tf
 
     Call x1 x2 -> inferCall False x1 x2
 
     Annotate x t -> let
       fun = (Lambda "_" (Just t) (Identifier (Unqualified "_"), loc), loc)
-      in inferCall True fun x
+      in traceShowM (convertType t) >> inferCall True fun x
 
     where
       basic f = (nullSubst, ) <$> f
@@ -247,12 +250,6 @@ inferCall rigid x1@(_, loc1) x2@(_, loc2) = do
   s3 <- uni loc2 (apply s2 t1a) t2
   let s4 = s3 `compose` s2 `compose` s1 `compose` s0
   applyEnv s4 $ (s4, ) <$> generalise (apply s4 t1b)
-
-annotated :: Expr -> Bool
-annotated (expr, _) =
-  case expr of
-    Annotate _ _ -> True
-    _ -> False
 
 unifyArr :: Maybe Type -> Location -> Type -> Infer (Subst, Type, Type)
 unifyArr maybeArr loc = \case
@@ -277,7 +274,7 @@ subsume loc t1 t2 = do
   (vars2, t2') <- unforallFresh t2
   s <- unify loc t1' t2'
   let s' = foldr Map.delete s vars2
-  if Set.disjoint (Set.fromList vars1) (freeVars s')
+  if null $ List.intersect vars1 (freeVars s')
     then return s'
     else Error.withLocation loc (Error.unification t1 t2)
 
@@ -305,7 +302,7 @@ unify loc = curry \case
     let t1' = apply (Map.singleton n1 $ TVar sk) t1
     let t2' = apply (Map.singleton n2 $ TVar sk) t2
     s <- unify loc t1' t2'
-    if Set.member sk (freeVars s)
+    if hasFree sk s
       then Error.withLocation loc (Error.unification (TAny n1 t1) (TAny n2 t2))
       else return s
 
@@ -329,7 +326,7 @@ rowGet cons loc label = \case
 
 bind :: Location -> Name -> Type -> Infer Subst
 bind loc n t
-  | Set.member n (freeVars t) =
+  | hasFree n t =
       Error.withLocation loc (Error.occursCheck n t)
   | otherwise = return (Map.singleton n t)
 
@@ -425,7 +422,7 @@ checkModule :: Module -> Either Error.Msg ()
 checkModule (Module funcs _ foreigns types _ syntaxDefs) =
   State.evalState (Reader.runReaderT (Except.runExceptT check) env) state
   where
-    state = InferState (foldr Cons undefined fresh)
+    state = foldr Cons undefined fresh
 
     envTypes = fmap (convertType . fst) foreigns
     envKinds = fmap fst types
