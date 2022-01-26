@@ -150,20 +150,20 @@ parseNumber :: Parser Expr
 parseNumber = do
   loc <- getLocation
   naturalOrFloat >>= \case
-    Left x -> return (Int $ fromInteger x, loc)
-    Right x -> return (Float x, loc)
+    Left x -> return (Literal $ Int $ fromInteger x, loc)
+    Right x -> return (Literal $ Float x, loc)
 
 parseChar :: Parser Expr
 parseChar = do
   loc <- getLocation
   x <- charLiteral
-  return (Char x, loc)
+  return (Literal $ Char x, loc)
 
 parseString :: Parser Expr
 parseString = do
   loc <- getLocation
   x <- stringLiteral
-  return (String x, loc)
+  return (Literal $ String x, loc)
 
 parseNegate :: Parser Expr
 parseNegate = do
@@ -224,7 +224,7 @@ parseFactor =
   parseNumber <|>
   parseChar <|>
   parseString <|>
-  parseIdentifier Label Identifier <|>
+  parseIdentifier (Literal . Label) Identifier <|>
   parseNegate <|>
   parseDefIn <|>
   parseLambda <|>

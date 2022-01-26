@@ -16,11 +16,7 @@ import Data.Set (Set)
 import Syntax.Common
 
 data SimpleExpr
-  = Int Int
-  | Float Double
-  | Char Char
-  | String String
-  | Label Label
+  = Literal Literal
   | Identifier Identifier
   | DefIn Name (Maybe Type) Expr Expr
   | Lambda Name (Maybe Type) Expr

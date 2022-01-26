@@ -83,14 +83,18 @@ makeValid name
       , "with", "yield"
       ]
 
+genLiteral :: Literal -> String
+genLiteral = \case
+  Int x -> show x
+  Float x -> show x
+  Char x -> show x
+  String x -> show x
+  Label x -> show x
+
 genExpr :: Expr -> String
 genExpr (expr, _) =
   case expr of
-    Int x -> show x
-    Float x -> show x
-    Char x -> show x
-    String x -> show x
-    Label x -> show x
+    Literal x -> genLiteral x
     Identifier n -> genIdentifier n
     DefIn n _ x y -> genDefIn n x y
     Lambda n _ x -> genLambda n x

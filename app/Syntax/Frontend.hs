@@ -23,11 +23,7 @@ import Data.Map (Map)
 import Syntax.Common
 
 data SimpleExpr
-  = Int Int
-  | Float Double
-  | Char Char
-  | String String
-  | Label Label
+  = Literal Literal
   | Identifier Identifier
   | Negate Expr
   | Operator Name (Maybe Expr) (Maybe Expr)

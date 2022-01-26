@@ -327,11 +327,7 @@ mergeAnnos annos = map \(name, body, loc) ->
 desugarExpr :: F.Expr -> Desugar Expr
 desugarExpr (expr, loc) =
   case expr of
-    F.Int x -> withLoc (Int x)
-    F.Float x -> withLoc (Float x)
-    F.Char x -> withLoc (Char x)
-    F.String x -> withLoc (String x)
-    F.Label x -> withLoc (Label x)
+    F.Literal lit -> withLoc (Literal lit)
 
     F.Identifier name -> ifDefined name id
 

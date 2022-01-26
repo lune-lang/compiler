@@ -6,6 +6,7 @@ module Syntax.Common
   , Label
   , ModName
   , Identifier(..)
+  , Literal(..)
   , Kind(..)
   , Role(..)
   , opChars
@@ -23,6 +24,13 @@ data Identifier
   = Qualified ModName Name
   | Unqualified Name
   deriving (Eq, Ord)
+
+data Literal
+  = Int Int
+  | Float Double
+  | Char Char
+  | String String
+  | Label Label
 
 data Kind
   = KType

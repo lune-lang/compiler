@@ -183,14 +183,18 @@ generalise t = do
   let vars = freeVars t \\ freeVars env
   return (foldr TAny t vars)
 
+inferLiteral :: Location -> Literal -> Infer Type
+inferLiteral loc = \case
+  Int _ -> numberType loc =<< freshVar
+  Float _ -> floatType loc
+  Char _ -> charType loc
+  String _ -> stringType loc
+  Label n -> labelType loc n
+
 inferType :: Expr -> Infer (Subst, Type)
 inferType (expr, loc) =
   case expr of
-    Int _ -> basic (numberType loc =<< freshVar)
-    Float _ -> basic (floatType loc)
-    Char _ -> basic (charType loc)
-    String _ -> basic (stringType loc)
-    Label n -> basic (labelType loc n)
+    Literal lit -> (nullSubst, ) <$> inferLiteral loc lit
 
     Identifier n -> do
       env <- Reader.asks (^. typeEnv)
@@ -234,9 +238,6 @@ inferType (expr, loc) =
     Annotate x t -> let
       fun = (Lambda "_" (Just t) (Identifier (Unqualified "_"), loc), loc)
       in traceShowM (convertType t) >> inferCall True fun x
-
-    where
-      basic f = (nullSubst, ) <$> f
 
 inferCall :: Bool -> Expr -> Expr -> Infer (Subst, Type)
 inferCall rigid x1@(_, loc1) x2@(_, loc2) = do

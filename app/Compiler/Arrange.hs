@@ -56,11 +56,7 @@ class (Variable a, Expression b) => FreeVars a b where
 instance Variable a => FreeVars a Expr where
   freeVars (expr, _) =
     case expr of
-      Int _ -> Set.empty
-      Float _ -> Set.empty
-      Char _ -> Set.empty
-      String _ -> Set.empty
-      Label _ -> Set.empty
+      Literal _ -> Set.empty
 
       Identifier n -> fromIdentifier n
 

@@ -29,11 +29,7 @@ type Unalias = ExceptT Error.Msg (Reader (Expands, Synonyms))
 applyExpr :: Map Name Expr -> Expr -> Expr
 applyExpr subst expr@(_, loc) =
   case fst expr of
-    Int _ -> expr
-    Float _ -> expr
-    Char _ -> expr
-    String _ -> expr
-    Label _ -> expr
+    Literal _ -> expr
 
     Identifier (Qualified _ _) -> expr
     Identifier (Unqualified var) ->
