@@ -13,6 +13,7 @@ executable lune
     other-modules:
       Syntax.Frontend,
       Syntax.Desugared,
+      Syntax.Propagated,
       Syntax.Inferred,
       Syntax.Common,
       Compiler.Parse,

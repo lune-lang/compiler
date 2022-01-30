@@ -1,6 +1,4 @@
-{-# LANGUAGE LambdaCase #-}
-
-module Syntax.Desugared
+module Syntax.Propagated
   ( SimpleExpr(..)
   , Expr
   , SimpleType(..)
@@ -13,16 +11,17 @@ import qualified Data.Map as Map
 import Data.Map (Map)
 import Data.Set (Set)
 
+import qualified Syntax.Desugared as D
 import Syntax.Common
 
 data SimpleExpr
   = Literal Literal
   | Identifier Identifier
-  | DefIn Name (Maybe Type) Expr Expr
-  | Lambda Name (Maybe Type) Expr
+  | DefIn Name Expr Expr
+  | Lambda Name (Maybe D.Type) Expr
   | Call Expr Expr
 
-type Expr = (SimpleExpr, Location)
+type Expr = (SimpleExpr, Bool, Location)
 
 data SimpleType
   = TCon Identifier
@@ -37,12 +36,12 @@ type Type = (SimpleType, Location)
 data Wrapper = Wrapper [Name] Type Identifier (Maybe Identifier)
 
 data Module = Module
-  { getFuncs :: [(Identifier, Maybe Type, Expr, Location)]
+  { getFuncs :: [(Identifier, Expr, Location)]
   , getExpands :: [(Identifier, [Name], Expr, Location)]
-  , getForeigns :: Map Identifier (Type, Set Identifier)
-  , getTypes :: Map Identifier (Kind, Maybe Wrapper)
-  , getSynonyms :: [(Identifier, [Name], Type, Location)]
-  , getSyntax :: Map Role (Either Type Expr)
+  , getForeigns :: Map Identifier (D.Type, Set Identifier)
+  , getTypes :: Map Identifier (Kind, Maybe D.Wrapper)
+  , getSynonyms :: [(Identifier, [Name], D.Type, Location)]
+  , getSyntax :: Map Role (Either D.Type Expr)
   }
 
 instance Semigroup Module where
